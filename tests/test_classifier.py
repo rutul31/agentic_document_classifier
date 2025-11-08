@@ -22,3 +22,4 @@ def test_classifier_detects_confidential(tmp_path):
     assert result.label in {"Highly Sensitive", "Confidential"}
     assert result.citations
     assert "salary" in result.citations[0].snippet.lower()
+    assert result.classification_id is not None

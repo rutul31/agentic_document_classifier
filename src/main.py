@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .classifier import CLASSIFICATION_LABELS, ClassificationResult, DualLLMClassifier
-from .hitl_feedback import Feedback, FeedbackRepository
+from .hitl_feedback import AdaptivePromptRefiner, Feedback, FeedbackRepository
 from .preprocess import DocumentBundle
 from .prompt_tree import PromptTree
 from .utils.logger import get_logger
@@ -51,8 +51,10 @@ class FeedbackRequest(BaseModel):
 
     classification_id: int
     reviewer: str
-    notes: str
+    decision: str
+    comments: str
     quality_score: float
+    suggested_label: Optional[str] = None
 
 
 def load_settings(path: pathlib.Path = CONFIG_PATH) -> Settings:
@@ -117,6 +119,7 @@ def create_app() -> FastAPI:
     repository = FeedbackRepository()
     classifier = create_classifier(settings, repository)
     prompt_tree = get_prompt_tree()
+    refiner = AdaptivePromptRefiner(repository, prompt_tree, CONFIG_PATH)
 
     @app.post("/classify")
     async def classify(request: ClassificationRequest) -> Dict[str, object]:
@@ -130,6 +133,7 @@ def create_app() -> FastAPI:
         response = {
             "result": result.to_json(),
             "reports": {key: str(value) for key, value in reports.items()},
+            "classification_id": result.classification_id,
         }
         LOGGER.info("Interactive classification complete for %s", request.document_path)
         return response
@@ -154,11 +158,34 @@ def create_app() -> FastAPI:
             classification_id=request.classification_id,
             feedback=Feedback(
                 reviewer=request.reviewer,
-                notes=request.notes,
+                decision=request.decision,
+                comments=request.comments,
                 quality_score=request.quality_score,
+                suggested_label=request.suggested_label,
             ),
         )
-        return {"status": "recorded"}
+        thresholds = refiner.refine()
+        history_path = repository.export_feedback_history(
+            pathlib.Path("feedback_history.json")
+        )
+        return {
+            "status": "recorded",
+            "history_path": str(history_path),
+            "thresholds": thresholds,
+        }
+
+    @app.get("/feedback/history")
+    async def feedback_history() -> Dict[str, object]:
+        """Return the stored feedback history for dashboard display."""
+
+        return {"items": repository.get_feedback_history()}
+
+    @app.post("/feedback/export")
+    async def export_feedback() -> Dict[str, object]:
+        """Force an export of the feedback history to disk."""
+
+        path = repository.export_feedback_history(pathlib.Path("feedback_history.json"))
+        return {"status": "exported", "path": str(path)}
 
     return app
 
