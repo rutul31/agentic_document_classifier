@@ -1,16 +1,35 @@
-"""Tests for preprocess module."""
+"""Integration-focused tests for the preprocessing module."""
 
-import pathlib
+import json
 
-from src.preprocess import DocumentPreprocessor
+from src.preprocess import DocumentBundle, DocumentPreprocessor
 
 
-def test_process_plain_text(tmp_path: pathlib.Path) -> None:
-    source = tmp_path / "doc.txt"
-    source.write_text("This is a confidential memo.", encoding="utf-8")
+def test_process_tc_documents(tc_documents):
+    """Ensure the preprocessor extracts text and metadata for TC1–TC5."""
+
+    for case_id, data in tc_documents.items():
+        bundle = data["bundle"]
+        config = data["config"]
+
+        assert isinstance(bundle, DocumentBundle)
+        assert bundle.text == config.text
+        assert bundle.metadata["source"] == str(data["path"])
+
+        payload = json.loads(bundle.to_json())
+        assert payload["text"] == config.text
+        assert payload["metadata"]["source"] == str(data["path"])
+        assert payload["images"] == []
+
+
+def test_preprocessor_handles_unknown_mime(tmp_path):
+    """Unknown file types should not raise and should return empty text."""
+
+    binary_path = tmp_path / "payload.bin"
+    binary_path.write_bytes(b"\x00\x01\x02")
 
     preprocessor = DocumentPreprocessor(enable_ocr=False)
-    bundle = preprocessor.process_document(source)
+    bundle = preprocessor.process_document(binary_path)
 
-    assert "confidential" in bundle.text.lower()
-    assert bundle.metadata["source"] == str(source)
+    assert bundle.text == ""
+    assert bundle.metadata["source"] == str(binary_path)

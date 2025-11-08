@@ -1,23 +1,26 @@
-"""Tests for the dual LLM classifier."""
+"""Tests for the dual LLM classifier and HITL feedback flow."""
 
-import pathlib
+from typing import Dict
 
+import pytest
 from src.classifier import ClassificationEngine, DualLLMClassifier
 from src.hitl_feedback import FeedbackRepository
 from src.preprocess import DocumentBundle
 from src.prompt_tree import PromptNode, PromptTree
 
-
-def build_prompt_tree() -> PromptTree:
-    root = PromptNode(name="root", prompt="root")
-    return PromptTree(root=root)
+from src.classifier import DualLLMClassifier
+from src.hitl_feedback import Feedback, FeedbackRepository
 
 
-def test_classifier_detects_confidential(tmp_path):
+@pytest.mark.parametrize(
+    "case_id",
+    ["TC1", "TC2", "TC3", "TC4", "TC5"],
+)
+def test_classifier_assigns_expected_labels(case_id: str, tc_documents: Dict[str, Dict], sample_prompt_tree) -> None:
+    """Classification results should match the heuristic expectations."""
+
     repository = FeedbackRepository(database_url="sqlite:///:memory:")
     classifier = DualLLMClassifier("gpt-4", "claude", repository)
-    bundle = DocumentBundle(text="This memo is confidential and contains salary data.")
-    result = classifier.classify(bundle, build_prompt_tree(), pathlib.Path("memo.txt"))
 
     assert result.label in {"Highly Sensitive", "Confidential"}
     assert result.citations
