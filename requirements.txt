@@ -2,6 +2,7 @@ fastapi
 uvicorn
 streamlit
 requests
+plotly
 langchain
 llama-index
 pdfplumber
@@ -11,6 +12,7 @@ pillow
 sqlalchemy
 pydantic
 pyyaml
+jinja2
 reportlab
 pytest
 pytest-cov
