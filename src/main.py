@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import pathlib
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -163,7 +162,7 @@ def create_app() -> FastAPI:
     return app
 
 
-async def _process_batch(
+def _process_batch(
     request: BatchRequest,
     classifier: DualLLMClassifier,
     prompt_tree: PromptTree,
@@ -182,7 +181,6 @@ async def _process_batch(
         LOGGER.info(
             "Batch job %s progress: %s/%s", job_id, index, len(request.documents)
         )
-        await asyncio.sleep(0)
     LOGGER.info("Batch job %s complete", job_id)
 
 
