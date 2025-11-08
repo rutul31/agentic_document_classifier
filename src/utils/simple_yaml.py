@@ -19,8 +19,6 @@ def parse_block_scalar(
         stripped = raw_line.strip()
 
         if not stripped:
-            if current_indent < indent:
-                break
             collected.append("")
             index += 1
             continue
