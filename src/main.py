@@ -16,6 +16,7 @@ from .classifier import CLASSIFICATION_LABELS, ClassificationResult, DualLLMClas
 from .hitl_feedback import AdaptivePromptRefiner, Feedback, FeedbackRepository
 from .preprocess import DocumentBundle, DocumentPreprocessor
 from .prompt_tree import PromptTree
+from .utils.local_llm import ModelConfig
 from .utils.logger import get_logger
 from .utils.simple_yaml import load as load_yaml
 
@@ -35,9 +36,10 @@ REPORTS_DIR = pathlib.Path("reports")
 class Settings:
     """Runtime configuration pulled from disk."""
 
-    primary_model: str
-    secondary_model: str
+    primary_model_id: str
+    secondary_model_id: Optional[str]
     safety_keywords: List[str]
+    model_configs: Dict[str, ModelConfig]
 
 
 def load_settings(path: pathlib.Path = CONFIG_PATH) -> Settings:
@@ -46,13 +48,44 @@ def load_settings(path: pathlib.Path = CONFIG_PATH) -> Settings:
     payload = load_yaml(str(path))
     models = payload.get("models", {})
     keywords = payload.get("safety_keywords", ["breach", "malware"])
+    registry: Dict[str, ModelConfig] = {}
+
+    def _register(alias: str, spec) -> Optional[str]:
+        if isinstance(spec, dict):
+            name = str(spec.get("name") or spec.get("model") or alias)
+            config = ModelConfig(
+                name=name,
+                llm_provider=str(spec.get("llm_provider", "local_llama")),
+                model_path=spec.get("model_path") or name,
+                inference_engine=str(spec.get("inference_engine", "ollama")),
+                temperature=float(spec.get("temperature", 0.3)),
+                max_tokens=int(spec.get("max_tokens", 1024)),
+                seed=spec.get("seed"),
+                base_url=spec.get("base_url"),
+                generation_kwargs=dict(spec.get("generation_kwargs", {})),
+            )
+            registry[name] = config
+            registry[alias] = config
+            return name
+        if isinstance(spec, str):
+            config = ModelConfig(name=spec)
+            registry[spec] = config
+            registry[alias] = config
+            return spec
+        return None
+
+    primary_spec = models.get("primary")
+    secondary_spec = models.get("secondary")
+    primary_model_id = _register("primary", primary_spec) or "local-llama"
+    secondary_model_id = _register("secondary", secondary_spec) if secondary_spec else None
 
     LOGGER.debug("Loaded settings: %s", payload)
 
     return Settings(
-        primary_model=models.get("primary", "gpt-4"),
-        secondary_model=models.get("secondary", "claude-3-opus"),
+        primary_model_id=primary_model_id,
+        secondary_model_id=secondary_model_id,
         safety_keywords=list(keywords),
+        model_configs=registry,
     )
 
 
@@ -60,10 +93,17 @@ def create_classifier(settings: Settings, repository: FeedbackRepository) -> Dua
     """Instantiate the dual LLM classifier with configured models."""
 
     return DualLLMClassifier(
-        primary_model=settings.primary_model,
-        secondary_model=settings.secondary_model,
+        primary_model=settings.model_configs.get(
+            settings.primary_model_id, settings.primary_model_id
+        ),
+        secondary_model=(
+            settings.model_configs.get(settings.secondary_model_id, settings.secondary_model_id)
+            if settings.secondary_model_id
+            else None
+        ),
         feedback_repository=repository,
         safety_keywords=settings.safety_keywords,
+        model_configs=settings.model_configs,
     )
 
 
