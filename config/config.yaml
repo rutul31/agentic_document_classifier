@@ -1,6 +1,20 @@
 models:
-  primary: gpt-4
-  secondary: claude-3-opus
+  primary:
+    name: llama-3.1-8b
+    llm_provider: local_llama
+    model_path: /models/llama-3.1-8b
+    inference_engine: ollama
+    temperature: 0.3
+    max_tokens: 1024
+    seed: 11
+  secondary:
+    name: llama-3.1-13b
+    llm_provider: local_llama
+    model_path: /models/llama-3.1-13b
+    inference_engine: transformers
+    temperature: 0.3
+    max_tokens: 1024
+    seed: 23
 thresholds:
   public: 0.5
   confidential: 0.65
