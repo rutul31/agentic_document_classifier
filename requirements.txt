@@ -2,6 +2,7 @@ fastapi
 uvicorn
 streamlit
 requests
+plotly
 langchain
 llama-index
 pdfplumber
