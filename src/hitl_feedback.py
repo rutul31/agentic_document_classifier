@@ -26,6 +26,7 @@ try:  # pragma: no cover - optional dependency
         Integer,
         String,
         create_engine,
+        text,
     )
     from sqlalchemy.orm import (
         DeclarativeBase,
@@ -176,7 +177,43 @@ class FeedbackRepository:
                     }
                 )
             self.engine = create_engine(database_url, **engine_kwargs)
+            # Create any missing tables defined by the ORM models.
             Base.metadata.create_all(self.engine)
+            # Run lightweight runtime migrations for missing columns that
+            # can occur when the DB was created by an older release.
+            try:
+                self._ensure_feedback_columns()
+            except Exception:
+                LOGGER.exception("Failed to ensure feedback table schema")
+    
+    def _ensure_feedback_columns(self) -> None:
+        """Ensure that expected feedback-related columns exist in the DB.
+
+        Some users may have an older sqlite database created prior to new
+        columns being added to the model (for example `decision`). SQLAlchemy's
+        create_all won't alter existing tables, so we apply lightweight ALTER
+        TABLE statements at runtime for small compatible changes.
+        """
+        if not getattr(self, "engine", None):
+            return
+
+        try:
+            with self.engine.connect() as conn:
+                # Query existing columns for the feedback_records table.
+                result = conn.execute(text("PRAGMA table_info('feedback_records')"))
+                rows = result.fetchall()
+                # PRAGMA table_info rows: (cid, name, type, notnull, dflt_value, pk)
+                existing = [row[1] for row in rows]
+
+                if "decision" not in existing:
+                    LOGGER.info("Adding missing 'decision' column to feedback_records")
+                    with conn.begin():
+                        # Add a nullable text column so existing rows continue to work.
+                        conn.exec_driver_sql(
+                            "ALTER TABLE feedback_records ADD COLUMN decision VARCHAR"
+                        )
+        except Exception:
+            LOGGER.exception("Error while ensuring feedback table columns")
         else:
             self.engine = None
             self._classifications: Dict[int, ClassificationRecord] = {}

@@ -1,0 +1,1 @@
+This report includes salary data and employee SSN numbers.
