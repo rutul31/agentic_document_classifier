@@ -341,7 +341,9 @@ class UploadResponse(BaseModel):
 class ClassificationJobRequest(BaseModel):
     """Request body for submitting a classification job."""
 
-    document_ids: List[str]
+    document_ids: Optional[List[str]] = None
+    text: Optional[str] = None
+    document_name: Optional[str] = None
 
 
 class ClassificationJobResponse(BaseModel):
@@ -426,6 +428,7 @@ def _serialize_classification(
         "score": result.score,
         "safety_flags": list(result.safety_flags),
         "verifier_agreement": result.verifier_agreement,
+        "classification_id": result.classification_id,
         "citations": citation_payloads,
         "reports": {key: str(path) for key, path in reports.items()},
     }
@@ -469,6 +472,30 @@ def create_app() -> FastAPI:
         report_dir=REPORTS_DIR,
         workers=2,
     )
+
+    async def _store_inline_document(
+        text: str, document_name: Optional[str]
+    ) -> str:
+        """Persist ad-hoc text input as a document in the store."""
+
+        document_id = uuid.uuid4().hex
+        filename = document_name or f"inline-{document_id}.txt"
+        suffix = pathlib.Path(filename).suffix or ".txt"
+        target_path = UPLOAD_DIR / f"{document_id}{suffix}"
+
+        def _write_text(path: pathlib.Path, data: str) -> None:
+            path.write_text(data, encoding="utf-8")
+
+        await asyncio.to_thread(_write_text, target_path, text)
+        bundle = await asyncio.to_thread(preprocessor.process_document, target_path)
+        bundle.metadata.setdefault("source", str(target_path))
+        bundle.metadata.setdefault("filename", filename)
+
+        await document_store.add(
+            StoredDocument(document_id=document_id, path=target_path, bundle=bundle)
+        )
+        LOGGER.info("Prepared inline document %s", document_id)
+        return document_id
 
     @app.on_event("startup")
     async def _startup() -> None:  # pragma: no cover - lifecycle wiring
@@ -516,17 +543,40 @@ def create_app() -> FastAPI:
     async def classify(request: ClassificationJobRequest) -> ClassificationJobResponse:
         """Submit documents for asynchronous classification."""
 
-        if not request.document_ids:
-            raise HTTPException(status_code=400, detail="No document IDs supplied")
+        document_ids = list(request.document_ids or [])
+
+        if request.text:
+            if document_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Provide either document IDs or raw text, not both.",
+                )
+            try:
+                new_document_id = await _store_inline_document(
+                    request.text, request.document_name
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                LOGGER.exception("Failed to prepare inline document: %s", exc)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to prepare document for classification.",
+                ) from exc
+            document_ids.append(new_document_id)
+
+        if not document_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="No document IDs or text supplied",
+            )
 
         try:
-            await document_store.ensure_exists(request.document_ids)
+            await document_store.ensure_exists(document_ids)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Unknown documents: {exc}") from exc
 
         task_id = await task_registry.create()
         await queue.enqueue(
-            ClassificationJob(task_id=task_id, document_ids=list(request.document_ids))
+            ClassificationJob(task_id=task_id, document_ids=list(document_ids))
         )
 
         return ClassificationJobResponse(task_id=task_id, status="queued")

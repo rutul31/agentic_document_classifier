@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from typing import Any, Dict, List
 
 import requests
 import streamlit as st
@@ -169,7 +168,12 @@ def _simulate_progress(status: Any, progress: Any) -> None:
     status.write("Awaiting verifier agreement…")
 
 
-def _run_classification(api_base: str, text: str, document_name: str) -> Optional[ClassificationState]:
+def _run_classification(
+    api_base: str,
+    text: str,
+    document_name: str,
+    uploaded_file: Optional[Any],
+) -> Optional[ClassificationState]:
     """Send the document to the backend and return structured state."""
 
     if not text:
@@ -177,12 +181,57 @@ def _run_classification(api_base: str, text: str, document_name: str) -> Optiona
         return None
 
     endpoint = f"{api_base}/classify"
-    payload = {"text": text, "document_path": document_name or None}
 
     with st.status("Running classification", expanded=True) as status:
         progress_placeholder = st.empty()
         progress = progress_placeholder.progress(0)
-        _simulate_progress(status, progress)
+        progress.progress(5)
+        status.write("Preparing document bundle…")
+
+        document_ids: List[str] = []
+        if uploaded_file is not None:
+            status.write("Uploading document to the classification service…")
+            file_bytes = uploaded_file.getvalue()
+            files = [
+                (
+                    "files",
+                    (
+                        uploaded_file.name,
+                        file_bytes,
+                        uploaded_file.type or "application/octet-stream",
+                    ),
+                )
+            ]
+            try:
+                upload_response = requests.post(
+                    f"{api_base}/upload", files=files, timeout=120
+                )
+            except requests.RequestException as exc:
+                status.update(label="Upload failed", state="error")
+                st.error(f"Unable to upload document: {exc}")
+                return None
+
+            if upload_response.status_code != 200:
+                status.update(label="Upload failed", state="error")
+                st.error(
+                    f"Upload failed with status {upload_response.status_code}: {upload_response.text}"
+                )
+                return None
+
+            upload_payload = upload_response.json()
+            document_ids = upload_payload.get("document_ids", [])
+            if not document_ids:
+                status.update(label="Upload failed", state="error")
+                st.error("The upload endpoint did not return document identifiers.")
+                return None
+            progress.progress(20)
+
+        if document_ids:
+            payload: Dict[str, Any] = {"document_ids": document_ids}
+        else:
+            payload = {"text": text, "document_name": document_name or None}
+
+        status.write("Submitting classification job…")
 
         try:
             response = requests.post(endpoint, json=payload, timeout=120)
@@ -190,6 +239,100 @@ def _run_classification(api_base: str, text: str, document_name: str) -> Optiona
             status.update(label="Network error", state="error")
             st.error(f"Failed to contact the classification service: {exc}")
             return None
+
+        if response.status_code != 200:
+            status.update(label="Submission failed", state="error")
+            st.error(f"Classification request failed: {response.text}")
+            return None
+
+        job_payload = response.json()
+        task_id = job_payload.get("task_id")
+        if not task_id:
+            status.update(label="Submission failed", state="error")
+            st.error("Classification service did not return a task identifier.")
+            return None
+
+        status.write("Awaiting classification results…")
+
+        poll_url = f"{api_base}/status/{task_id}"
+        poll_timeout = 300.0
+        poll_interval = 1.0
+        start_time = time.time()
+        result_payload: Optional[Dict[str, Any]] = None
+
+        while True:
+            try:
+                status_response = requests.get(poll_url, timeout=60)
+            except requests.RequestException as exc:
+                status.update(label="Status polling failed", state="error")
+                st.error(f"Failed to fetch job status: {exc}")
+                return None
+
+            if status_response.status_code != 200:
+                status.update(label="Status polling failed", state="error")
+                st.error(
+                    f"Status endpoint returned {status_response.status_code}: {status_response.text}"
+                )
+                return None
+
+            status_payload = status_response.json()
+            progress_value = status_payload.get("progress") or 0.0
+            progress.progress(max(20, int(progress_value * 100)))
+            current_status = (status_payload.get("status") or "queued").title()
+            status.write(f"Job status: {current_status}")
+
+            if status_payload.get("status") == "failed":
+                status.update(label="Classification failed", state="error")
+                st.error(status_payload.get("error") or "Classification job failed.")
+                return None
+
+            if status_payload.get("status") == "completed":
+                results = status_payload.get("results") or []
+                if not results:
+                    status.update(label="Classification failed", state="error")
+                    st.error("Classification completed but no results were returned.")
+                    return None
+                result_payload = results[0]
+                break
+
+            if time.time() - start_time > poll_timeout:
+                status.update(label="Classification timed out", state="error")
+                st.error("Classification did not complete within the allotted time.")
+                return None
+
+            time.sleep(poll_interval)
+
+        progress.progress(100)
+        status.update(label="Classification complete", state="complete")
+        progress_placeholder.empty()
+
+    if result_payload is None:
+        st.error("Classification job completed without returning a result.")
+        return None
+
+    classification_state = ClassificationState(
+        label=result_payload.get("label", "Unknown"),
+        score=float(result_payload.get("score", 0.0)),
+        citations=result_payload.get("citations", []),
+        safety_flags=result_payload.get("safety_flags", []),
+        verifier_agreement=bool(result_payload.get("verifier_agreement", False)),
+        classification_id=result_payload.get("classification_id"),
+        reports=result_payload.get("reports", {}),
+        document_text=text,
+        document_name=document_name or (uploaded_file.name if uploaded_file else "document"),
+        timestamp=datetime.utcnow(),
+    )
+
+    history = st.session_state.setdefault("history", [])
+    history.append(
+        {
+            "timestamp": classification_state.timestamp.isoformat(),
+            "label": classification_state.label,
+            "score": classification_state.score,
+        }
+    )
+    st.session_state["latest_result"] = classification_state
+    return classification_state
 
 def interactive_mode() -> None:
     st.header("Interactive Classification")
@@ -500,7 +643,7 @@ def main() -> None:
     if submitted:
         document_text = _extract_text(uploaded_file, manual_text)
         latest_state = _run_classification(
-            context["api_base"], document_text, document_name.strip()
+            context["api_base"], document_text, document_name.strip(), uploaded_file
         )
 
     if latest_state:
