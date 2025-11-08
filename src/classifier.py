@@ -55,6 +55,7 @@ class ClassificationResult:
     citations: List[Citation] = field(default_factory=list)
     safety_flags: List[str] = field(default_factory=list)
     verifier_agreement: bool = True
+    classification_id: Optional[int] = None
 
     def to_json(self) -> str:
         """Serialize the classification result to JSON."""
@@ -65,6 +66,7 @@ class ClassificationResult:
             "citations": [citation.__dict__ for citation in self.citations],
             "safety_flags": self.safety_flags,
             "verifier_agreement": self.verifier_agreement,
+            "classification_id": self.classification_id,
         }
         return json.dumps(payload, ensure_ascii=False)
 
@@ -168,12 +170,17 @@ class DualLLMClassifier:
         )
         LOGGER.debug("Classification stored under ID %s", classification_id)
 
+        recalibrated_score = self.feedback_repository.recalibrate_confidence(
+            label, score
+        )
+
         return ClassificationResult(
             label=label,
-            score=score,
+            score=recalibrated_score,
             citations=citations.citations,
             safety_flags=safety_flags,
             verifier_agreement=agreement,
+            classification_id=classification_id,
         )
 
     # Internal helpers -----------------------------------------------------------

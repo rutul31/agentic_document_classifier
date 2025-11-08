@@ -13,8 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .classifier import CLASSIFICATION_LABELS, ClassificationResult, DualLLMClassifier
-from .hitl_feedback import Feedback, FeedbackRepository
-from .preprocess import DocumentBundle, DocumentPreprocessor
+from .hitl_feedback import AdaptivePromptRefiner, Feedback, FeedbackRepository
+from .preprocess import DocumentBundle
 from .prompt_tree import PromptTree
 from .utils.logger import get_logger
 from .utils.simple_yaml import load as load_yaml
