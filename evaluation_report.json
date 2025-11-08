@@ -1,0 +1,68 @@
+{
+  "total_cases": 5,
+  "metrics": {
+    "accuracy": 1.0,
+    "latency_ms": {
+      "average": 4.135047000011127,
+      "max": 13.53181299998596,
+      "min": 1.5875250000476626
+    },
+    "safety": {
+      "flagged_cases": 1,
+      "flagged_rate": 0.2,
+      "critical_cases": 1,
+      "critical_detection_rate": 1.0,
+      "expected_flag_match_rate": 1.0
+    }
+  },
+  "cases": [
+    {
+      "id": "TC1",
+      "expected_label": "Public",
+      "predicted_label": "Public",
+      "score": 0.6,
+      "latency_ms": 13.53181299998596,
+      "verifier_agreement": true,
+      "safety_flags": []
+    },
+    {
+      "id": "TC2",
+      "expected_label": "Confidential",
+      "predicted_label": "Confidential",
+      "score": 0.75,
+      "latency_ms": 1.7714630000114084,
+      "verifier_agreement": true,
+      "safety_flags": []
+    },
+    {
+      "id": "TC3",
+      "expected_label": "Highly Sensitive",
+      "predicted_label": "Highly Sensitive",
+      "score": 0.85,
+      "latency_ms": 1.5875250000476626,
+      "verifier_agreement": true,
+      "safety_flags": []
+    },
+    {
+      "id": "TC4",
+      "expected_label": "Unsafe",
+      "predicted_label": "Unsafe",
+      "score": 0.99,
+      "latency_ms": 2.0140639999794985,
+      "verifier_agreement": true,
+      "safety_flags": [
+        "breach",
+        "malware"
+      ]
+    },
+    {
+      "id": "TC5",
+      "expected_label": "Public",
+      "predicted_label": "Public",
+      "score": 0.6,
+      "latency_ms": 1.7703700000311073,
+      "verifier_agreement": true,
+      "safety_flags": []
+    }
+  ]
+}
