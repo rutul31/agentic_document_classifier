@@ -1,0 +1,11 @@
+name: root
+prompt: |
+  You are a document classification expert. Review the document content and assess risk levels.
+children:
+  - name: sensitivity
+    prompt: |
+      Determine if the document contains sensitive personal or corporate data.
+    children:
+      - name: safety
+        prompt: |
+          Identify any indicators of unsafe or malicious content requiring escalation.
