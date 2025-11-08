@@ -14,8 +14,8 @@ An AI-powered assistant for classifying multi-modal documents into Public, Confi
 
 ## Getting Started
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+python -m venv .datathon_env
+source .datathon_env/bin/activate
 pip install -r requirements.txt
 ```
 
