@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+streamlit
+requests
+langchain
+llama-index
+pdfplumber
+pytesseract
+opencv-python
+pillow
+sqlalchemy
+pydantic
+pyyaml
+reportlab
+pytest
+black
+flake8
