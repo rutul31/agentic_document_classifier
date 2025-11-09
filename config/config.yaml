@@ -1,25 +1,33 @@
+ollama:
+  base_url: http://127.0.0.1:11434
+  llm_provider: local_llama
+  inference_engine: ollama
+  temperature: 0.25
+  max_tokens: 768
+  seed: 11
+  generation_kwargs:
+    num_ctx: 8192
+    top_p: 0.9
+
 models:
   primary:
-    name: llama-3.1-8b
-    llm_provider: local_llama
-    model_path: /models/llama-3.1-8b
-    inference_engine: ollama
-    temperature: 0.3
-    max_tokens: 1024
-    seed: 11
+    name: risk-primary-8b
+    model: llama3.1:8b
+    temperature: 0.2
+    generation_kwargs:
+      top_k: 40
   secondary:
-    name: llama-3.1-13b
-    llm_provider: local_llama
-    model_path: /models/llama-3.1-13b
-    inference_engine: transformers
-    temperature: 0.3
+    name: risk-secondary-13b
+    model: llama3.1:13b
     max_tokens: 1024
     seed: 23
+
 thresholds:
   public: 0.5
   confidential: 0.65
   highly_sensitive: 0.8
   unsafe: 0.9
+
 safety_keywords:
   - breach
   - malware

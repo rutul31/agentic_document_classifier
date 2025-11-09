@@ -19,6 +19,28 @@ source .datathon_env/bin/activate
 pip install -r requirements.txt
 ```
 
+## Local LLMs via Ollama
+1. [Install Ollama](https://ollama.com/download) on the host where this backend runs and start the daemon with `ollama serve` (it listens on `http://127.0.0.1:11434` by default).
+2. Pull the models referenced in `config/config.yaml`, for example:
+   ```bash
+   ollama pull llama3.1:8b
+   ollama pull llama3.1:13b
+   ```
+3. Optional: verify the service is reachable with `curl http://127.0.0.1:11434/api/tags`.
+4. Adjust `config/config.yaml` if you need a different model name, base URL, or generation options. The default template configures two local models:
+   ```yaml
+   ollama:
+     base_url: http://127.0.0.1:11434
+   models:
+     primary:
+       name: risk-primary-8b
+       model: llama3.1:8b
+     secondary:
+       name: risk-secondary-13b
+       model: llama3.1:13b
+   ```
+5. Restart `uvicorn` (or the Docker container) so the new configuration is loaded. The backend will now call the local Ollama HTTP API for both classifier passes.
+
 ### Running the Backend
 ```bash
 uvicorn src.main:app --reload

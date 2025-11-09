@@ -185,8 +185,23 @@ class LocalLlamaEngine:
             options["seed"] = self.config.seed
         payload["options"] = options
 
-        response = requests.post(url, json=payload, timeout=120)
-        response.raise_for_status()
+        try:
+            response = requests.post(url, json=payload, timeout=120)
+            response.raise_for_status()
+        except requests.exceptions.ConnectionError as exc:  # type: ignore[attr-defined]
+            raise RuntimeError(
+                f"Unable to reach Ollama at {endpoint}. "
+                "Ensure `ollama serve` is running and accessible."
+            ) from exc
+        except requests.exceptions.Timeout as exc:  # type: ignore[attr-defined]
+            raise RuntimeError(
+                f"Ollama request timed out for model '{payload['model']}'."
+            ) from exc
+        except requests.exceptions.RequestException as exc:  # type: ignore[attr-defined]
+            raise RuntimeError(
+                f"Ollama request failed for model '{payload['model']}': {exc}"
+            ) from exc
+
         data = response.json()
         return data.get("response", "")
 

@@ -1,0 +1,230 @@
+INFO:     Will watch for changes in these directories: ['/Users/rpatel/Desktop/agentic_document_classifier']
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [89625] using StatReload
+2025-11-08 17:22:53,053 | INFO | src.hitl_feedback | Adding missing 'decision' column to feedback_records
+2025-11-08 17:22:53,054 | ERROR | src.hitl_feedback | Error while ensuring feedback table columns
+Traceback (most recent call last):
+  File "/Users/rpatel/Desktop/agentic_document_classifier/src/hitl_feedback.py", line 211, in _ensure_feedback_columns
+    with conn.begin():
+         ^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 859, in begin
+    raise exc.InvalidRequestError(
+sqlalchemy.exc.InvalidRequestError: This connection has already initialized a SQLAlchemy Transaction() object via begin() or autobegin; can't call begin() here unless rollback() or commit() is called first.
+INFO:     Started server process [89628]
+INFO:     Waiting for application startup.
+2025-11-08 17:22:53,059 | INFO | src.main | Started 2 classification worker(s)
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'src/hitl_feedback.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2025-11-08 17:23:52,000 | INFO | src.main | Classification workers stopped
+INFO:     Application shutdown complete.
+INFO:     Finished server process [89628]
+2025-11-08 17:23:53,056 | INFO | src.hitl_feedback | Adding missing 'decision' column to feedback_records
+INFO:     Started server process [89786]
+INFO:     Waiting for application startup.
+2025-11-08 17:23:53,059 | INFO | src.main | Started 2 classification worker(s)
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'src/hitl_feedback.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2025-11-08 17:24:50,161 | INFO | src.main | Classification workers stopped
+INFO:     Application shutdown complete.
+INFO:     Finished server process [89786]
+INFO:     Started server process [90379]
+INFO:     Waiting for application startup.
+2025-11-08 17:24:51,218 | INFO | src.main | Started 2 classification worker(s)
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'src/hitl_feedback.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2025-11-08 17:24:53,238 | INFO | src.main | Classification workers stopped
+INFO:     Application shutdown complete.
+INFO:     Finished server process [90379]
+INFO:     Started server process [90389]
+INFO:     Waiting for application startup.
+2025-11-08 17:24:53,977 | INFO | src.main | Started 2 classification worker(s)
+INFO:     Application startup complete.
+2025-11-08 17:25:25,373 | INFO | src.main | Prepared inline document 595ba2222da148dbb5d9b9e221f64eb5
+2025-11-08 17:25:25,373 | INFO | src.main | Queueing classification job 40df9ca75fe84d809caa5f0379f4e982
+INFO:     127.0.0.1:63129 - "POST /classify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63130 - "GET /status/40df9ca75fe84d809caa5f0379f4e982 HTTP/1.1" 200 OK
+2025-11-08 17:25:25,380 | WARNING | src.classifier | Local inference failed for llama-3.1-8b: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x11be22090>: Failed to establish a new connection: [Errno 61] Connection refused')). Falling back to heuristics.
+2025-11-08 17:25:25,382 | WARNING | src.classifier | Local inference failed for llama-3.1-8b: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x11be825d0>: Failed to establish a new connection: [Errno 61] Connection refused')). Falling back to heuristics.
+2025-11-08 17:25:25,383 | WARNING | src.classifier | Local inference failed for llama-3.1-8b: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x11be22bd0>: Failed to establish a new connection: [Errno 61] Connection refused')). Falling back to heuristics.
+2025-11-08 17:25:25,384 | WARNING | src.classifier | Local inference failed for llama-3.1-13b: transformers not installed; install transformers to use this backend. Falling back to heuristics.
+2025-11-08 17:25:25,384 | WARNING | src.classifier | Local inference failed for llama-3.1-13b: transformers not installed; install transformers to use this backend. Falling back to heuristics.
+2025-11-08 17:25:25,384 | WARNING | src.classifier | Local inference failed for llama-3.1-13b: transformers not installed; install transformers to use this backend. Falling back to heuristics.
+2025-11-08 17:25:25,400 | WARNING | src.hitl_feedback | OperationalError querying feedback_records: (sqlite3.OperationalError) no such column: feedback_records.comments
+[SQL: SELECT feedback_records.id AS feedback_records_id, feedback_records.classification_id AS feedback_records_classification_id, feedback_records.reviewer AS feedback_records_reviewer, feedback_records.decision AS feedback_records_decision, feedback_records.comments AS feedback_records_comments, feedback_records.suggested_label AS feedback_records_suggested_label, feedback_records.quality_score AS feedback_records_quality_score, feedback_records.created_at AS feedback_records_created_at 
+FROM feedback_records]
+(Background on this error at: https://sqlalche.me/e/20/e3q8). Attempting to repair schema and retry.
+2025-11-08 17:25:25,401 | ERROR | src.main | Task 40df9ca75fe84d809caa5f0379f4e982 failed: (sqlite3.OperationalError) no such column: feedback_records.comments
+[SQL: SELECT feedback_records.id AS feedback_records_id, feedback_records.classification_id AS feedback_records_classification_id, feedback_records.reviewer AS feedback_records_reviewer, feedback_records.decision AS feedback_records_decision, feedback_records.comments AS feedback_records_comments, feedback_records.suggested_label AS feedback_records_suggested_label, feedback_records.quality_score AS feedback_records_quality_score, feedback_records.created_at AS feedback_records_created_at 
+FROM feedback_records]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+2025-11-08 17:25:25,401 | ERROR | src.main | Worker 0 failed job 40df9ca75fe84d809caa5f0379f4e982: (sqlite3.OperationalError) no such column: feedback_records.comments
+[SQL: SELECT feedback_records.id AS feedback_records_id, feedback_records.classification_id AS feedback_records_classification_id, feedback_records.reviewer AS feedback_records_reviewer, feedback_records.decision AS feedback_records_decision, feedback_records.comments AS feedback_records_comments, feedback_records.suggested_label AS feedback_records_suggested_label, feedback_records.quality_score AS feedback_records_quality_score, feedback_records.created_at AS feedback_records_created_at 
+FROM feedback_records]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+Traceback (most recent call last):
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+sqlite3.OperationalError: no such column: feedback_records.comments
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/rpatel/Desktop/agentic_document_classifier/src/hitl_feedback.py", line 391, in get_label_statistics
+    records = session.query(FeedbackRecord).all()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+           ^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such column: feedback_records.comments
+[SQL: SELECT feedback_records.id AS feedback_records_id, feedback_records.classification_id AS feedback_records_classification_id, feedback_records.reviewer AS feedback_records_reviewer, feedback_records.decision AS feedback_records_decision, feedback_records.comments AS feedback_records_comments, feedback_records.suggested_label AS feedback_records_suggested_label, feedback_records.quality_score AS feedback_records_quality_score, feedback_records.created_at AS feedback_records_created_at 
+FROM feedback_records]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+sqlite3.OperationalError: no such column: feedback_records.comments
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/rpatel/Desktop/agentic_document_classifier/src/main.py", line 291, in _worker_loop
+    await self._process_job(job)
+  File "/Users/rpatel/Desktop/agentic_document_classifier/src/main.py", line 308, in _process_job
+    result = await asyncio.to_thread(
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/src/classifier.py", line 439, in classify
+    recalibrated_score = self.feedback_repository.recalibrate_confidence(
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/src/hitl_feedback.py", line 418, in recalibrate_confidence
+    stats = self.get_label_statistics()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/src/hitl_feedback.py", line 404, in get_label_statistics
+    records = session.query(FeedbackRecord).all()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/query.py", line 2704, in all
+    return self._iter().all()  # type: ignore
+           ^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+           ^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/Users/rpatel/Desktop/agentic_document_classifier/.datathon_env/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such column: feedback_records.comments
+[SQL: SELECT feedback_records.id AS feedback_records_id, feedback_records.classification_id AS feedback_records_classification_id, feedback_records.reviewer AS feedback_records_reviewer, feedback_records.decision AS feedback_records_decision, feedback_records.comments AS feedback_records_comments, feedback_records.suggested_label AS feedback_records_suggested_label, feedback_records.quality_score AS feedback_records_quality_score, feedback_records.created_at AS feedback_records_created_at 
+FROM feedback_records]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+2025-11-08 17:25:25,412 | ERROR | src.main | Task 40df9ca75fe84d809caa5f0379f4e982 failed: (sqlite3.OperationalError) no such column: feedback_records.comments
+[SQL: SELECT feedback_records.id AS feedback_records_id, feedback_records.classification_id AS feedback_records_classification_id, feedback_records.reviewer AS feedback_records_reviewer, feedback_records.decision AS feedback_records_decision, feedback_records.comments AS feedback_records_comments, feedback_records.suggested_label AS feedback_records_suggested_label, feedback_records.quality_score AS feedback_records_quality_score, feedback_records.created_at AS feedback_records_created_at 
+FROM feedback_records]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+INFO:     127.0.0.1:63137 - "GET /status/40df9ca75fe84d809caa5f0379f4e982 HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/hitl_feedback.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2025-11-08 17:25:45,326 | INFO | src.main | Classification workers stopped
+INFO:     Application shutdown complete.
+INFO:     Finished server process [90389]
+2025-11-08 17:25:46,607 | INFO | src.hitl_feedback | Adding missing columns to feedback_records: ['comments', 'suggested_label']
+INFO:     Started server process [91640]
+INFO:     Waiting for application startup.
+2025-11-08 17:25:46,611 | INFO | src.main | Started 2 classification worker(s)
+INFO:     Application startup complete.
+2025-11-08 17:26:05,180 | INFO | src.main | Prepared inline document d4f2a9cf13f6484791c7a7ec6d0939ee
+2025-11-08 17:26:05,180 | INFO | src.main | Queueing classification job 8b586273946c4727a9dc1fc821a82b84
+INFO:     127.0.0.1:63226 - "POST /classify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63227 - "GET /status/8b586273946c4727a9dc1fc821a82b84 HTTP/1.1" 200 OK
+2025-11-08 17:26:05,190 | WARNING | src.classifier | Local inference failed for llama-3.1-8b: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x10daec8f0>: Failed to establish a new connection: [Errno 61] Connection refused')). Falling back to heuristics.
+2025-11-08 17:26:05,193 | WARNING | src.classifier | Local inference failed for llama-3.1-8b: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x11c0ddd30>: Failed to establish a new connection: [Errno 61] Connection refused')). Falling back to heuristics.
+2025-11-08 17:26:05,196 | WARNING | src.classifier | Local inference failed for llama-3.1-8b: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/generate (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x11b976660>: Failed to establish a new connection: [Errno 61] Connection refused')). Falling back to heuristics.
+2025-11-08 17:26:05,196 | WARNING | src.classifier | Local inference failed for llama-3.1-13b: transformers not installed; install transformers to use this backend. Falling back to heuristics.
+2025-11-08 17:26:05,197 | WARNING | src.classifier | Local inference failed for llama-3.1-13b: transformers not installed; install transformers to use this backend. Falling back to heuristics.
+2025-11-08 17:26:05,197 | WARNING | src.classifier | Local inference failed for llama-3.1-13b: transformers not installed; install transformers to use this backend. Falling back to heuristics.
+INFO:     127.0.0.1:63234 - "GET /status/8b586273946c4727a9dc1fc821a82b84 HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/hitl_feedback.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2025-11-08 17:26:24,633 | INFO | src.main | Classification workers stopped
+INFO:     Application shutdown complete.
+INFO:     Finished server process [91640]
+INFO:     Started server process [92978]
+INFO:     Waiting for application startup.
+2025-11-08 17:26:26,130 | INFO | src.main | Started 2 classification worker(s)
+INFO:     Application startup complete.

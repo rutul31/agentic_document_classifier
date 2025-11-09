@@ -1,0 +1,1 @@
+{"label": "Highly Sensitive", "score": 0.9, "citations": [{"source": "data/uploads/cd64aa1db2a343eebc06818abd6350f4.txt", "page": 1, "snippet": "this file has SSN, phone numbers in it.", "confidence": 0.8, "metadata": {"label": "Highly Sensitive"}}], "safety_flags": [], "verifier_agreement": true, "classification_id": 8}

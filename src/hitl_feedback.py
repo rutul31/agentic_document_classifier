@@ -28,6 +28,7 @@ try:  # pragma: no cover - optional dependency
         create_engine,
         text,
     )
+    from sqlalchemy.exc import OperationalError
     from sqlalchemy.orm import (
         DeclarativeBase,
         Mapped,
@@ -185,6 +186,12 @@ class FeedbackRepository:
                 self._ensure_feedback_columns()
             except Exception:
                 LOGGER.exception("Failed to ensure feedback table schema")
+        else:
+            self.engine = None
+            self._classifications: Dict[int, ClassificationRecord] = {}
+            self._feedback: Dict[int, List[FeedbackRecord]] = {}
+            self._misclassifications: Dict[int, List[MisclassificationRecord]] = {}
+            self._counter = 0
     
     def _ensure_feedback_columns(self) -> None:
         """Ensure that expected feedback-related columns exist in the DB.
@@ -205,21 +212,28 @@ class FeedbackRepository:
                 # PRAGMA table_info rows: (cid, name, type, notnull, dflt_value, pk)
                 existing = [row[1] for row in rows]
 
-                if "decision" not in existing:
-                    LOGGER.info("Adding missing 'decision' column to feedback_records")
-                    with conn.begin():
-                        # Add a nullable text column so existing rows continue to work.
-                        conn.exec_driver_sql(
-                            "ALTER TABLE feedback_records ADD COLUMN decision VARCHAR"
-                        )
+                # Define columns we expect and the SQL type to add if missing.
+                required = [
+                    ("decision", "VARCHAR"),
+                    ("comments", "VARCHAR"),
+                    ("suggested_label", "VARCHAR"),
+                    ("quality_score", "FLOAT"),
+                    ("created_at", "DATETIME"),
+                ]
+
+                missing = [col for col, _ in required if col not in existing]
+                if missing:
+                    LOGGER.info("Adding missing columns to feedback_records: %s", missing)
+                    for col, sqltype in required:
+                        if col in existing:
+                            continue
+                        sql = f"ALTER TABLE feedback_records ADD COLUMN {col} {sqltype}"
+                        try:
+                            conn.exec_driver_sql(sql)
+                        except Exception:
+                            LOGGER.exception("Failed to add column %s to feedback_records", col)
         except Exception:
             LOGGER.exception("Error while ensuring feedback table columns")
-        else:
-            self.engine = None
-            self._classifications: Dict[int, ClassificationRecord] = {}
-            self._feedback: Dict[int, List[FeedbackRecord]] = {}
-            self._misclassifications: Dict[int, List[MisclassificationRecord]] = {}
-            self._counter = 0
 
     # Classification persistence -------------------------------------------------
     def record_classification(
@@ -386,12 +400,26 @@ class FeedbackRepository:
             ) / bucket["total"]
 
         if SQLALCHEMY_AVAILABLE:
-            with Session(self.engine) as session:  # type: ignore[arg-type]
-                records = session.query(FeedbackRecord).all()
-                for entry in records:
-                    label = entry.classification.classification  # type: ignore[attr-defined]
-                    _register(label, entry.decision, entry.quality_score)
-            return stats
+            try:
+                with Session(self.engine) as session:  # type: ignore[arg-type]
+                    records = session.query(FeedbackRecord).all()
+                    for entry in records:
+                        label = entry.classification.classification  # type: ignore[attr-defined]
+                        _register(label, entry.decision, entry.quality_score)
+                return stats
+            except OperationalError as exc:
+                # Attempt to repair missing-columns issues at runtime and retry once.
+                LOGGER.warning("OperationalError querying feedback_records: %s. Attempting to repair schema and retry.", exc)
+                try:
+                    self._ensure_feedback_columns()
+                except Exception:
+                    LOGGER.exception("Failed to ensure feedback table columns during retry")
+                with Session(self.engine) as session:  # type: ignore[arg-type]
+                    records = session.query(FeedbackRecord).all()
+                    for entry in records:
+                        label = entry.classification.classification  # type: ignore[attr-defined]
+                        _register(label, entry.decision, entry.quality_score)
+                return stats
 
         for classification in self._classifications.values():
             for entry in classification.feedback:

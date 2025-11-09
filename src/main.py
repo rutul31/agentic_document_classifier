@@ -49,20 +49,61 @@ def load_settings(path: pathlib.Path = CONFIG_PATH) -> Settings:
     models = payload.get("models", {})
     keywords = payload.get("safety_keywords", ["breach", "malware"])
     registry: Dict[str, ModelConfig] = {}
+    model_defaults = payload.get("model_defaults") or {}
+    ollama_defaults = payload.get("ollama") or {}
+
+    def _from_sources(spec: Dict[str, object], key: str) -> Optional[object]:
+        for source in (spec, ollama_defaults, model_defaults):
+            if isinstance(source, dict) and source.get(key) is not None:
+                return source.get(key)
+        return None
+
+    def _merge_dicts(*dicts: Optional[Dict[str, object]]) -> Dict[str, object]:
+        merged: Dict[str, object] = {}
+        for entry in dicts:
+            if isinstance(entry, dict):
+                merged.update(entry)
+        return merged
 
     def _register(alias: str, spec) -> Optional[str]:
         if isinstance(spec, dict):
-            name = str(spec.get("name") or spec.get("model") or alias)
+            name = str(
+                spec.get("name")
+                or spec.get("alias")
+                or spec.get("label")
+                or spec.get("model")
+                or alias
+            )
+            model_identifier = (
+                spec.get("model") or spec.get("model_path") or spec.get("name") or alias
+            )
+            inference_engine = str(_from_sources(spec, "inference_engine") or "ollama")
+            llm_provider = str(_from_sources(spec, "llm_provider") or "local_llama")
+            temperature = _from_sources(spec, "temperature")
+            max_tokens = _from_sources(spec, "max_tokens")
+            seed_value = _from_sources(spec, "seed")
+            base_url = _from_sources(spec, "base_url")
+            generation_kwargs = _merge_dicts(
+                model_defaults.get("generation_kwargs"),
+                ollama_defaults.get("generation_kwargs"),
+                spec.get("generation_kwargs"),
+            )
+
+            if temperature is None:
+                temperature = 0.3
+            if max_tokens is None:
+                max_tokens = 1024
+
             config = ModelConfig(
                 name=name,
-                llm_provider=str(spec.get("llm_provider", "local_llama")),
-                model_path=spec.get("model_path") or name,
-                inference_engine=str(spec.get("inference_engine", "ollama")),
-                temperature=float(spec.get("temperature", 0.3)),
-                max_tokens=int(spec.get("max_tokens", 1024)),
-                seed=spec.get("seed"),
-                base_url=spec.get("base_url"),
-                generation_kwargs=dict(spec.get("generation_kwargs", {})),
+                llm_provider=llm_provider,
+                model_path=str(model_identifier or name),
+                inference_engine=inference_engine,
+                temperature=float(temperature),
+                max_tokens=int(max_tokens),
+                seed=int(seed_value) if seed_value is not None else None,
+                base_url=str(base_url) if base_url is not None else None,
+                generation_kwargs=generation_kwargs,
             )
             registry[name] = config
             registry[alias] = config
@@ -639,4 +680,3 @@ __all__ = [
     "create_app",
     "load_settings",
 ]
-
