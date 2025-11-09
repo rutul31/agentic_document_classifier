@@ -7,10 +7,11 @@ import io
 import json
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import requests
 import streamlit as st
@@ -35,6 +36,7 @@ CITATION_COLORS = ["#7F5AF0", "#FF8E3C", "#2CB1BC", "#EF4565", "#16BDCA"]
 class ClassificationState:
     """Persisted state for the most recent classification run."""
 
+    identifier: str
     label: str
     score: float
     citations: List[Dict[str, Any]]
@@ -45,7 +47,286 @@ class ClassificationState:
     document_text: str
     document_name: str
     timestamp: datetime
+    category: str
+    page_count: int
+    image_count: int
+    evidence: List[Dict[str, Any]]
+    content_safety: str
+    llm_debug: Dict[str, Any] = field(default_factory=dict)
+    single_prompt: bool = False
 
+
+def _bucket_category(raw_label: str) -> str:
+    lowered = (raw_label or "").lower()
+    if "high" in lowered:
+        return "Highly Sensitive"
+    if "confidential" in lowered:
+        return "Confidential"
+    return "Public"
+
+
+def _loading_indicator(label: str) -> str:
+    safe_label = html.escape(label)
+    return f"""
+    <div class="loading-indicator">
+        <div class="spinner-circle"></div>
+        <span>{safe_label}</span>
+    </div>
+    """
+
+
+def _info_card(title: str, value: str, subtitle: Optional[str] = None) -> str:
+    subtitle_html = (
+        f'<p class="info-card__subtitle">{html.escape(subtitle)}</p>'
+        if subtitle
+        else ""
+    )
+    return (
+        f'<div class="info-card">'
+        f'<p class="info-card__title">{html.escape(title)}</p>'
+        f'<p class="info-card__value">{html.escape(value)}</p>'
+        f"{subtitle_html}"
+        f"</div>"
+    )
+
+
+def _normalise_evidence_items(evidence: List[Any]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for entry in evidence or []:
+        if isinstance(entry, dict):
+            items.append(entry)
+        else:
+            items.append({"type": "text", "content": str(entry)})
+    return items
+
+
+def _prepare_evidence_payload(raw: Any) -> List[Dict[str, Any]]:
+    if isinstance(raw, list):
+        return _normalise_evidence_items(raw)
+    if raw:
+        return _normalise_evidence_items([raw])
+    return []
+
+
+def _render_evidence_block(
+    evidence: List[Any],
+    *,
+    show_header: bool = True,
+) -> None:
+    if show_header:
+        st.subheader("Evidence")
+    normalised = _normalise_evidence_items(evidence)
+    if not normalised:
+        st.info("No evidence references were generated for this document.")
+        return
+
+    for index, item in enumerate(normalised[:10], start=1):
+        item_type = (item.get("type") or "text").lower()
+        if item_type == "image" and item.get("content"):
+            bbox = item.get("bbox") or [0.02, 0.02, 0.96, 0.96]
+            left = bbox[0] * 100
+            top = bbox[1] * 100
+            width = bbox[2] * 100
+            height = bbox[3] * 100
+            caption = item.get("description") or "Image evidence"
+            page = item.get("page")
+            caption_text = (
+                f"{caption} • Page {page}" if page else caption
+            )
+            st.markdown(
+                f"""
+                <div class="image-evidence">
+                    <div class="image-wrapper">
+                        <img src="{item['content']}" alt="Image evidence {index}" />
+                        <span class="bbox-overlay" style="left:{left}%; top:{top}%; width:{width}%; height:{height}%;"></span>
+                    </div>
+                    <p class="image-caption">{html.escape(caption_text)}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            content = item.get("content") or ""
+            description = item.get("description")
+            page = item.get("page")
+            subtitle = []
+            if page:
+                subtitle.append(f"Page {page}")
+            if description:
+                subtitle.append(description)
+            subtitle_text = " · ".join(subtitle)
+            subtitle_html = (
+                f"<small>{html.escape(subtitle_text)}</small>" if subtitle_text else ""
+            )
+            st.markdown(
+                f"""
+                <div class="evidence-item text-evidence">
+                    <span class="badge">{index}</span>
+                    <div>
+                        <p>{html.escape(str(content))}</p>
+                        {subtitle_html}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def _record_history(state: ClassificationState) -> None:
+    entry = {
+        "id": state.identifier,
+        "document_name": state.document_name,
+        "timestamp": state.timestamp,
+        "label": state.label,
+        "category": state.category,
+        "category_bucket": _bucket_category(state.category or state.label),
+        "score": state.score,
+        "content_safety": state.content_safety,
+        "page_count": state.page_count,
+        "image_count": state.image_count,
+        "reports": dict(state.reports),
+        "evidence": list(state.evidence),
+        "safety_flags": list(state.safety_flags),
+        "llm_debug": dict(state.llm_debug or {}),
+        "single_prompt": state.single_prompt,
+    }
+    history = st.session_state.setdefault("history", [])
+    history.insert(0, entry)
+    del history[25:]
+
+
+def _coerce_timestamp(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            pass
+    return datetime.utcnow()
+
+
+def _render_history_panel(history: List[Dict[str, Any]]) -> None:
+    st.subheader("Past documents")
+    if not history:
+        st.info("No past classifications yet. Run a document to build history.")
+        return
+
+    option_map: Dict[str, Dict[str, Any]] = {}
+    option_labels: Dict[str, str] = {}
+    for index, entry in enumerate(history):
+        entry_id = entry.get("id") or f"legacy-{index}"
+        option_map[entry_id] = entry
+        timestamp = _coerce_timestamp(entry.get("timestamp"))
+        bucket = entry.get("category_bucket") or _bucket_category(
+            entry.get("category") or entry.get("label") or "Public"
+        )
+        name = entry.get("document_name") or "Document"
+        option_labels[entry_id] = (
+            f"{name} • {timestamp.strftime('%b %d %H:%M')} • {bucket}"
+        )
+
+    placeholder = "__none__"
+    options = [placeholder] + list(option_map.keys())
+
+    def _format_history_option(key: str) -> str:
+        if key == placeholder:
+            return "Choose a document…"
+        return option_labels.get(key, key)
+
+    selected_id = st.selectbox(
+        "Select a document to preview",
+        options,
+        format_func=_format_history_option,
+        key="history_select",
+    )
+
+    if selected_id == placeholder:
+        st.info("Select a document above to view details.")
+    else:
+        selected = option_map[selected_id]
+        timestamp = _coerce_timestamp(selected.get("timestamp"))
+        bucket = selected.get("category_bucket") or _bucket_category(
+            selected.get("category") or selected.get("label") or "Public"
+        )
+
+        with st.expander(
+            f"Details for {option_labels.get(selected_id, 'document')}", expanded=False
+        ):
+            mode_label = "Single prompt" if selected.get("single_prompt") else "Prompt tree"
+            st.caption(
+                f"Processed on {timestamp.strftime('%Y-%m-%d %H:%M')} • {mode_label}"
+            )
+            cards = st.columns(4)
+            cards[0].markdown(_info_card("Category", bucket), unsafe_allow_html=True)
+            cards[1].markdown(
+                _info_card("# of pages", str(selected.get("page_count", "—"))),
+                unsafe_allow_html=True,
+            )
+            cards[2].markdown(
+                _info_card("# of images", str(selected.get("image_count", "—"))),
+                unsafe_allow_html=True,
+            )
+            cards[3].markdown(
+                _info_card("Content safety", selected.get("content_safety", "Unknown")),
+                unsafe_allow_html=True,
+            )
+
+            evidence = selected.get("evidence") or []
+            _render_evidence_block(
+                evidence if isinstance(evidence, list) else [], show_header=False
+            )
+
+            reports = selected.get("reports") or {}
+            cols = st.columns(2)
+            json_path = reports.get("json")
+            pdf_path = reports.get("pdf")
+            if json_path and Path(json_path).exists():
+                try:
+                    json_bytes = Path(json_path).read_bytes()
+                    cols[0].download_button(
+                        "Download JSON report",
+                        data=json_bytes,
+                        file_name=f"{selected.get('document_name','document')}-history.json",
+                        mime="application/json",
+                        key=f"history-json-{selected_id}",
+                    )
+                except OSError:
+                    cols[0].info("JSON report unavailable.")
+            else:
+                cols[0].info("JSON report unavailable.")
+
+            if pdf_path and Path(pdf_path).exists():
+                try:
+                    pdf_bytes = Path(pdf_path).read_bytes()
+                    cols[1].download_button(
+                        "Download PDF report",
+                        data=pdf_bytes,
+                        file_name=f"{selected.get('document_name','document')}-history.pdf",
+                        mime="application/pdf",
+                        key=f"history-pdf-{selected_id}",
+                    )
+                except OSError:
+                    cols[1].info("PDF report unavailable.")
+            else:
+                cols[1].info("PDF report unavailable.")
+
+    table_rows = []
+    for entry in history[:10]:
+        ts = _coerce_timestamp(entry.get("timestamp"))
+        mode = "Single Prompt" if entry.get("single_prompt") else "Prompt Tree"
+        table_rows.append(
+            {
+                "Document": entry.get("document_name", "Document"),
+                "Category": entry.get("category_bucket")
+                or _bucket_category(entry.get("label") or "Public"),
+                "Score": f"{entry.get('score', 0.0):.2f}",
+                "Safety": entry.get("content_safety", "Unknown"),
+                "Mode": mode,
+                "Run at": ts.strftime("%Y-%m-%d %H:%M"),
+            }
+        )
+    st.dataframe(table_rows, use_container_width=True)
 
 def _apply_theme(dark_mode: bool) -> None:
     """Inject custom theming and responsive layout tweaks."""
@@ -98,6 +379,154 @@ def _apply_theme(dark_mode: bool) -> None:
             height: 14px;
             border-radius: 50%;
         }}
+        .info-card {{
+            background-color: var(--panel-bg);
+            border: 1px solid rgba(127, 90, 240, 0.25);
+            border-radius: 0.75rem;
+            padding: 1rem 1.2rem;
+            min-height: 120px;
+        }}
+        .info-card__title {{
+            margin: 0;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: rgba(255, 255, 255, 0.7);
+        }}
+        .info-card__value {{
+            margin: 0.1rem 0;
+            font-size: 1.6rem;
+            font-weight: 600;
+            color: var(--accent-color);
+        }}
+        .info-card__subtitle {{
+            margin: 0;
+            font-size: 0.9rem;
+            color: var(--viewer-text);
+            opacity: 0.85;
+        }}
+        .loading-indicator {{
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: 600;
+            color: var(--accent-color);
+        }}
+        .spinner-circle {{
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            border: 3px solid rgba(127, 90, 240, 0.25);
+            border-top-color: var(--accent-color);
+            animation: spin 1s linear infinite;
+        }}
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+        .evidence-list {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }}
+        .evidence-item {{
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-start;
+            padding: 0.75rem;
+            border: 1px solid rgba(127, 90, 240, 0.2);
+            border-radius: 0.6rem;
+            background: var(--panel-bg);
+        }}
+        .text-evidence p {{
+            margin-bottom: 0.2rem;
+        }}
+        .badge {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--accent-color);
+            color: #fff;
+            font-weight: 600;
+        }}
+        .image-evidence {{
+            margin-bottom: 1rem;
+        }}
+        .image-wrapper {{
+            position: relative;
+            border-radius: 0.6rem;
+            overflow: hidden;
+            border: 1px solid rgba(127, 90, 240, 0.2);
+        }}
+        .image-wrapper img {{
+            width: 100%;
+            display: block;
+        }}
+        .bbox-overlay {{
+            position: absolute;
+            border: 2px solid var(--accent-color);
+            border-radius: 0.25rem;
+            pointer-events: none;
+        }}
+        .image-caption {{
+            margin: 0.4rem 0 0;
+            font-size: 0.9rem;
+            color: var(--viewer-text);
+        }}
+        .hero-card {{
+            background: linear-gradient(135deg, rgba(127,90,240,0.25), rgba(22,189,202,0.2));
+            border-radius: 1rem;
+            padding: 1.5rem;
+            border: 1px solid rgba(255,255,255,0.1);
+        }}
+        .hero-card h2 {{
+            margin-bottom: 0.5rem;
+        }}
+        .hero-metrics {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.75rem;
+        }}
+        .hero-metrics div {{
+            background: var(--panel-bg);
+            border-radius: 0.75rem;
+            padding: 0.75rem;
+            border: 1px solid rgba(127, 90, 240, 0.2);
+            text-align: center;
+        }}
+        .hero-metrics strong {{
+            font-size: 1.4rem;
+            color: var(--accent-color);
+        }}
+        .citation-card {{
+            border: 1px solid rgba(127, 90, 240, 0.25);
+            border-radius: 0.75rem;
+            padding: 0.9rem 1rem;
+            background: var(--panel-bg);
+            margin-bottom: 0.8rem;
+        }}
+        .citation-card__header {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.4rem;
+            font-size: 0.9rem;
+            color: rgba(255,255,255,0.7);
+        }}
+        .citation-card__chips {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            margin-top: 0.4rem;
+        }}
+        .chip {{
+            display: inline-flex;
+            padding: 0.2rem 0.6rem;
+            border-radius: 999px;
+            background: rgba(127, 90, 240, 0.18);
+            font-size: 0.8rem;
+        }}
         @media (max-width: 768px) {{
             .stTabs [role="tablist"] {{
                 flex-wrap: wrap;
@@ -119,11 +548,16 @@ def _render_sidebar() -> Dict[str, Any]:
     stored_api = st.session_state.get("api_base", DEFAULT_API_BASE)
     stored_dark_mode = st.session_state.get("dark_mode", True)
 
-    api_base = st.sidebar.text_input("API base URL", value=stored_api)
     dark_mode = st.sidebar.toggle("Dark mode", value=stored_dark_mode)
+    single_prompt_mode = st.sidebar.toggle(
+        "Single prompt mode", value=st.session_state.get("single_prompt_mode", False)
+    )
+    with st.sidebar.expander("Advanced settings", expanded=False):
+        api_base = st.text_input("API base URL", value=stored_api)
 
     st.session_state["api_base"] = api_base
     st.session_state["dark_mode"] = dark_mode
+    st.session_state["single_prompt_mode"] = single_prompt_mode
 
     history = st.session_state.get("history", [])
     if history:
@@ -181,10 +615,13 @@ def _run_classification(
         return None
 
     endpoint = f"{api_base}/classify"
+    single_prompt_mode = bool(st.session_state.get("single_prompt_mode", False))
 
     with st.status("Running classification", expanded=True) as status:
         progress_placeholder = st.empty()
         progress = progress_placeholder.progress(0)
+        job_status_placeholder = st.empty()
+        spinner_placeholder = st.empty()
         progress.progress(5)
         status.write("Preparing document bundle…")
 
@@ -227,9 +664,10 @@ def _run_classification(
             progress.progress(20)
 
         if document_ids:
-            payload: Dict[str, Any] = {"document_ids": document_ids}
+            payload = {"document_ids": document_ids}
         else:
             payload = {"text": text, "document_name": document_name or None}
+        payload["single_prompt"] = single_prompt_mode
 
         status.write("Submitting classification job…")
 
@@ -253,6 +691,10 @@ def _run_classification(
             return None
 
         status.write("Awaiting classification results…")
+        spinner_placeholder.markdown(
+            _loading_indicator("Processing"), unsafe_allow_html=True
+        )
+        last_status: Optional[str] = None
 
         poll_url = f"{api_base}/status/{task_id}"
         poll_timeout = 300.0
@@ -264,11 +706,13 @@ def _run_classification(
             try:
                 status_response = requests.get(poll_url, timeout=60)
             except requests.RequestException as exc:
+                spinner_placeholder.empty()
                 status.update(label="Status polling failed", state="error")
                 st.error(f"Failed to fetch job status: {exc}")
                 return None
 
             if status_response.status_code != 200:
+                spinner_placeholder.empty()
                 status.update(label="Status polling failed", state="error")
                 st.error(
                     f"Status endpoint returned {status_response.status_code}: {status_response.text}"
@@ -279,9 +723,14 @@ def _run_classification(
             progress_value = status_payload.get("progress") or 0.0
             progress.progress(max(20, int(progress_value * 100)))
             current_status = (status_payload.get("status") or "queued").title()
-            status.write(f"Job status: {current_status}")
+            if current_status != last_status:
+                job_status_placeholder.markdown(
+                    f"**Job status:** {current_status}", unsafe_allow_html=True
+                )
+                last_status = current_status
 
             if status_payload.get("status") == "failed":
+                spinner_placeholder.empty()
                 status.update(label="Classification failed", state="error")
                 st.error(status_payload.get("error") or "Classification job failed.")
                 return None
@@ -289,6 +738,7 @@ def _run_classification(
             if status_payload.get("status") == "completed":
                 results = status_payload.get("results") or []
                 if not results:
+                    spinner_placeholder.empty()
                     status.update(label="Classification failed", state="error")
                     st.error("Classification completed but no results were returned.")
                     return None
@@ -296,6 +746,7 @@ def _run_classification(
                 break
 
             if time.time() - start_time > poll_timeout:
+                spinner_placeholder.empty()
                 status.update(label="Classification timed out", state="error")
                 st.error("Classification did not complete within the allotted time.")
                 return None
@@ -303,6 +754,7 @@ def _run_classification(
             time.sleep(poll_interval)
 
         progress.progress(100)
+        spinner_placeholder.empty()
         status.update(label="Classification complete", state="complete")
         progress_placeholder.empty()
 
@@ -310,7 +762,11 @@ def _run_classification(
         st.error("Classification job completed without returning a result.")
         return None
 
+    evidence_payload = _prepare_evidence_payload(result_payload.get("evidence", []))
+    llm_debug = result_payload.get("llm_debug") or {}
+
     classification_state = ClassificationState(
+        identifier=uuid4().hex,
         label=result_payload.get("label", "Unknown"),
         score=float(result_payload.get("score", 0.0)),
         citations=result_payload.get("citations", []),
@@ -321,16 +777,16 @@ def _run_classification(
         document_text=text,
         document_name=document_name or (uploaded_file.name if uploaded_file else "document"),
         timestamp=datetime.utcnow(),
+        category=result_payload.get("category", result_payload.get("label", "Unknown")),
+        page_count=int(result_payload.get("page_count", 0) or 0),
+        image_count=int(result_payload.get("image_count", 0) or 0),
+        evidence=evidence_payload,
+        content_safety=result_payload.get("content_safety", "Unknown"),
+        llm_debug=llm_debug,
+        single_prompt=bool(result_payload.get("single_prompt", False)),
     )
 
-    history = st.session_state.setdefault("history", [])
-    history.append(
-        {
-            "timestamp": classification_state.timestamp.isoformat(),
-            "label": classification_state.label,
-            "score": classification_state.score,
-        }
-    )
+    _record_history(classification_state)
     st.session_state["latest_result"] = classification_state
     return classification_state
 
@@ -424,7 +880,11 @@ def batch_mode() -> None:
         status.update(label="Classification complete", state="complete")
         progress_placeholder.empty()
 
+    evidence_payload = _prepare_evidence_payload(result_payload.get("evidence", []))
+    llm_debug = result_payload.get("llm_debug") or {}
+
     classification_state = ClassificationState(
+        identifier=uuid4().hex,
         label=result_payload.get("label", "Unknown"),
         score=float(result_payload.get("score", 0.0)),
         citations=result_payload.get("citations", []),
@@ -435,16 +895,16 @@ def batch_mode() -> None:
         document_text=text,
         document_name=document_name or "uploaded-document",
         timestamp=datetime.utcnow(),
+        category=result_payload.get("category", result_payload.get("label", "Unknown")),
+        page_count=int(result_payload.get("page_count", 0) or 0),
+        image_count=int(result_payload.get("image_count", 0) or 0),
+        evidence=evidence_payload,
+        content_safety=result_payload.get("content_safety", "Unknown"),
+        llm_debug=llm_debug,
+        single_prompt=bool(result_payload.get("single_prompt", False)),
     )
 
-    history = st.session_state.setdefault("history", [])
-    history.append(
-        {
-            "timestamp": classification_state.timestamp.isoformat(),
-            "label": classification_state.label,
-            "score": classification_state.score,
-        }
-    )
+    _record_history(classification_state)
     st.session_state["latest_result"] = classification_state
     return classification_state
 
@@ -496,6 +956,38 @@ def _render_citation_legend(citations: List[Dict[str, Any]]) -> None:
         )
 
 
+def _render_citation_cards(citations: List[Dict[str, Any]]) -> None:
+    if not citations:
+        st.info("No citations were generated for this document.")
+        return
+
+    for index, citation in enumerate(citations, start=1):
+        snippet = citation.get("snippet") or "No snippet provided."
+        page = citation.get("page") or "—"
+        metadata = citation.get("metadata") or {}
+        chips = []
+        if metadata.get("label"):
+            chips.append(metadata["label"])
+        if metadata.get("signal"):
+            chips.append(metadata["signal"])
+        chips_html = "".join(
+            f"<span class='chip'>{html.escape(str(chip))}</span>" for chip in chips
+        )
+        st.markdown(
+            f"""
+            <div class="citation-card">
+                <div class="citation-card__header">
+                    <strong>Citation {index}</strong>
+                    <span>Page {page}</span>
+                </div>
+                <p>{html.escape(snippet)}</p>
+                <div class="citation-card__chips">{chips_html}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def _render_downloads(state: ClassificationState) -> None:
     """Expose JSON and PDF downloads for the classification."""
 
@@ -509,10 +1001,17 @@ def _render_downloads(state: ClassificationState) -> None:
         "classification_id": state.classification_id,
         "generated_at": state.timestamp.isoformat(),
         "document_name": state.document_name,
+        "category": state.category,
+        "page_count": state.page_count,
+        "image_count": state.image_count,
+        "content_safety": state.content_safety,
+        "evidence": state.evidence,
+        "llm_debug": state.llm_debug,
+        "single_prompt_mode": state.single_prompt,
     }
     st.download_button(
         "Download JSON report",
-        data=json.dumps(json_payload, indent=2).encode("utf-8"),
+        data=json.dumps(json_payload, indent=2, default=str).encode("utf-8"),
         file_name=f"{state.document_name}-classification.json",
         mime="application/json",
     )
@@ -542,8 +1041,12 @@ def _render_history_chart(history: List[Dict[str, Any]]) -> None:
         st.info("Run a classification to see category analytics.")
         return
 
-    counts = Counter(entry["label"] for entry in history)
-    labels = list(counts.keys())
+    counts = Counter(
+        _bucket_category(entry.get("category") or entry.get("label") or "Public")
+        for entry in history
+    )
+    ordered_labels = ["Highly Sensitive", "Confidential", "Public"]
+    labels = [label for label in ordered_labels if label in counts] or list(counts.keys())
     values = [counts[label] for label in labels]
     colors = [CITATION_COLORS[i % len(CITATION_COLORS)] for i in range(len(labels))]
 
@@ -582,16 +1085,32 @@ def _render_feedback(state: Optional[ClassificationState], api_base: str) -> Non
 
     with st.form("feedback_form", clear_on_submit=True):
         reviewer = st.text_input("Reviewer name")
-        quality_score = st.slider("Quality score", min_value=0.0, max_value=1.0, value=0.8)
-        notes = st.text_area("Feedback notes", help="Highlight corrections or additional context.")
+        decision_display = st.selectbox(
+            "Decision",
+            ["Accept", "Override", "Reclassify", "Flag"],
+            index=0,
+        )
+        suggested_label = st.text_input(
+            "Suggested label (optional)",
+            help="Provide the correct label if this classification should change.",
+        )
+        quality_score = st.slider(
+            "Quality score", min_value=0.0, max_value=1.0, value=0.8
+        )
+        notes = st.text_area(
+            "Feedback notes", help="Highlight corrections or additional context."
+        )
         submitted = st.form_submit_button("Send feedback")
 
     if submitted:
+        decision_value = decision_display.lower()
         payload = {
             "classification_id": state.classification_id,
             "reviewer": reviewer or "Analyst",
+            "decision": decision_value,
             "notes": notes,
             "quality_score": quality_score,
+            "suggested_label": suggested_label or None,
         }
         try:
             response = requests.post(f"{api_base}/feedback", json=payload, timeout=30)
@@ -621,6 +1140,58 @@ def main() -> None:
     st.title("Interactive document classification")
     st.caption("Upload documents, monitor progress, review evidence, and capture feedback in one place.")
 
+    history: List[Dict[str, Any]] = st.session_state.get("history", [])
+    total_docs = len(history)
+    last_bucket = (
+        history[0].get("category_bucket")
+        if history
+        else "—"
+    )
+    unsafe_count = sum(
+        1
+        for entry in history
+        if (entry.get("category_bucket") or "").lower().startswith("high")
+    )
+
+    hero_cols = st.columns([2, 1])
+    hero_cols[0].markdown(
+        """
+        <div class="hero-card">
+            <h2>Document Risk Command Center</h2>
+            <p>Monitor classification outcomes and trace the exact evidence—text or imagery—that triggered each decision.</p>
+            <ul>
+                <li>Real-time dual-LLM verification</li>
+                <li>Visual redaction cues for sensitive screenshots</li>
+                <li>Persistent audit trail of past submissions</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    hero_cols[1].markdown(
+        f"""
+        <div class="hero-metrics">
+            <div>
+                <p>Total documents</p>
+                <strong>{total_docs}</strong>
+            </div>
+            <div>
+                <p>Last category</p>
+                <strong>{last_bucket}</strong>
+            </div>
+            <div>
+                <p>High-risk cases</p>
+                <strong>{unsafe_count}</strong>
+            </div>
+            <div>
+                <p>Session mode</p>
+                <strong>{"Dark" if context["dark_mode"] else "Light"}</strong>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     latest_state: Optional[ClassificationState] = st.session_state.get("latest_result")
 
     with st.form("classification_form"):
@@ -647,25 +1218,55 @@ def main() -> None:
         )
 
     if latest_state:
-        summary_cols = st.columns(4)
-        summary_cols[0].metric("Predicted label", latest_state.label)
-        summary_cols[1].metric("Confidence", f"{latest_state.score * 100:.1f}%")
-        summary_cols[2].metric(
-            "Verifier agreement",
-            "Yes" if latest_state.verifier_agreement else "No",
+        bucketed = _bucket_category(latest_state.category or latest_state.label)
+        primary_cols = st.columns(4)
+        primary_cols[0].markdown(
+            _info_card("Category", bucketed), unsafe_allow_html=True
         )
-        summary_cols[3].metric(
-            "Safety flags",
-            ", ".join(latest_state.safety_flags) if latest_state.safety_flags else "None",
+        primary_cols[1].markdown(
+            _info_card("# of pages", str(latest_state.page_count)), unsafe_allow_html=True
+        )
+        primary_cols[2].markdown(
+            _info_card("# of images", str(latest_state.image_count)),
+            unsafe_allow_html=True,
+        )
+        primary_cols[3].markdown(
+            _info_card("Content safety", latest_state.content_safety),
+            unsafe_allow_html=True,
         )
 
-        viewer_tab, citations_tab, downloads_tab, feedback_tab, analytics_tab = st.tabs(
+        secondary_cols = st.columns(4)
+        secondary_cols[0].markdown(
+            _info_card("Confidence", f"{latest_state.score * 100:.1f}%"),
+            unsafe_allow_html=True,
+        )
+        secondary_cols[1].markdown(
+            _info_card(
+                "Verifier agreement",
+                "Yes" if latest_state.verifier_agreement else "No",
+            ),
+            unsafe_allow_html=True,
+        )
+        safety_text = (
+            ", ".join(latest_state.safety_flags) if latest_state.safety_flags else "None"
+        )
+        secondary_cols[2].markdown(
+            _info_card("Safety flags", safety_text), unsafe_allow_html=True
+        )
+        mode_label = "Single prompt" if latest_state.single_prompt else "Prompt tree"
+        secondary_cols[3].markdown(
+            _info_card("Mode", mode_label, subtitle=latest_state.document_name),
+            unsafe_allow_html=True,
+        )
+
+        _render_evidence_block(latest_state.evidence)
+
+        viewer_tab, citations_tab, downloads_tab, feedback_tab = st.tabs(
             [
                 "Document viewer",
                 "Citations",
                 "Reports",
                 "Feedback",
-                "Analytics",
             ]
         )
 
@@ -674,8 +1275,7 @@ def main() -> None:
 
         with citations_tab:
             _render_citation_legend(latest_state.citations)
-            if latest_state.citations:
-                st.json(latest_state.citations)
+            _render_citation_cards(latest_state.citations)
 
         with downloads_tab:
             _render_downloads(latest_state)
@@ -683,11 +1283,12 @@ def main() -> None:
         with feedback_tab:
             _render_feedback(latest_state, context["api_base"])
 
-        with analytics_tab:
-            _render_history_chart(st.session_state.get("history", []))
     else:
         st.info("Submit a document to unlock document viewer, reports, and analytics.")
-        _render_history_chart(st.session_state.get("history", []))
+
+    st.markdown("---")
+    _render_history_panel(history)
+    _render_history_chart(history)
 
 
 def _render_feedback_history() -> None:

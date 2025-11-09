@@ -7,7 +7,7 @@ import json
 import mimetypes
 import pathlib
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:  # pragma: no cover - optional dependency
     from PIL import Image
@@ -41,7 +41,7 @@ class DocumentImage:
 
     image: object
     page: Optional[int] = None
-    metadata: Dict[str, str] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -50,7 +50,7 @@ class DocumentBundle:
 
     text: str
     images: List[DocumentImage] = field(default_factory=list)
-    metadata: Dict[str, str] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> str:
         """Serialize the bundle into JSON for persistence."""
@@ -79,15 +79,62 @@ class DocumentPreprocessor:
     def process_document(self, source: pathlib.Path) -> DocumentBundle:
         """Process a single document and return structured artefacts."""
 
-        text = self._extract_text(source)
+        text, page_count, page_spans = self._extract_text(source)
         images = list(self._extract_images(source))
-        metadata = {"source": str(source)}
+        metadata = self._build_metadata(source, text, images, page_count, page_spans)
         LOGGER.debug("Processed document %s", source)
         return DocumentBundle(text=text, images=images, metadata=metadata)
 
+    def _build_metadata(
+        self,
+        source: pathlib.Path,
+        text: str,
+        images: List[DocumentImage],
+        page_count: int,
+        page_spans: List[Dict[str, int]],
+    ) -> Dict[str, Any]:
+        """Derive structured metadata for downstream prompt templating."""
+
+        text_content = text or ""
+        stripped = text_content.strip()
+        has_text = bool(stripped)
+        image_count = len(images)
+        pages_with_images = sorted(
+            {img.page for img in images if img.page is not None}
+        )
+        word_count = len(stripped.split()) if stripped else 0
+
+        if has_text and image_count:
+            content_type = "mixed"
+        elif image_count:
+            content_type = "image"
+        elif has_text:
+            content_type = "text"
+        else:
+            content_type = "unknown"
+
+        metadata: Dict[str, Any] = {
+            "source": str(source),
+            "has_text": has_text,
+            "text_length": len(text_content),
+            "character_count": len(text_content),
+            "word_count": word_count,
+            "has_images": image_count > 0,
+            "image_count": image_count,
+            "content_type": content_type,
+            "page_count": max(int(page_count or 0), 0),
+        }
+
+        if pages_with_images:
+            metadata["pages_with_images"] = pages_with_images
+        if page_spans:
+            metadata["page_spans"] = page_spans
+
+        return metadata
+
     # Internal helpers -----------------------------------------------------------
-    def _extract_text(self, source: pathlib.Path) -> str:
-        """Extract text from supported document types."""
+    def _extract_text(self, source: pathlib.Path) -> Tuple[str, int, List[Dict[str, int]]]:
+        """Extract text plus basic pagination metadata."""
 
         mime, _ = mimetypes.guess_type(source)
         if not mime:
@@ -96,29 +143,52 @@ class DocumentPreprocessor:
         LOGGER.debug("Extracting text from %s with mime %s", source, mime)
 
         if mime.startswith("text"):
-            return source.read_text(encoding="utf-8")
+            text = source.read_text(encoding="utf-8")
+            if not text:
+                return "", 0, []
+            sections = text.split("\f")
+            spans: List[Dict[str, int]] = []
+            cursor = 0
+            for index, section in enumerate(sections, start=1):
+                start = cursor
+                cursor += len(section)
+                spans.append({"page": index, "start": start, "end": cursor})
+                cursor += 1  # account for removed delimiter
+            return text, max(len(sections), 1), spans
 
         if mime == "application/pdf":
             return self._extract_pdf_text(source)
 
         if mime.startswith("image"):
-            return self._extract_image_text(source)
+            text = self._extract_image_text(source)
+            span = {"page": 1, "start": 0, "end": len(text)} if text else {}
+            return text, 1 if text else 0, [span] if span else []
 
         LOGGER.warning("Unsupported mime type %s. Returning empty text.", mime)
-        return ""
+        return "", 0, []
 
-    def _extract_pdf_text(self, source: pathlib.Path) -> str:
-        """Extract textual content from a PDF document."""
+    def _extract_pdf_text(self, source: pathlib.Path) -> Tuple[str, int, List[Dict[str, int]]]:
+        """Extract textual content and page count from a PDF document."""
 
         if pdfplumber is None:  # pragma: no cover - optional dependency
             LOGGER.warning("pdfplumber not installed; returning empty text.")
-            return ""
+            return "", 0, []
 
         texts: List[str] = []
+        page_spans: List[Dict[str, int]] = []
+        separator = "\n\n"
+        current = 0
         with pdfplumber.open(str(source)) as pdf:  # type: ignore[arg-type]
-            for page in pdf.pages:
-                texts.append(page.extract_text() or "")
-        return "\n".join(texts)
+            for index, page in enumerate(pdf.pages, start=1):
+                page_text = page.extract_text() or ""
+                texts.append(page_text)
+                start = current
+                current += len(page_text)
+                page_spans.append({"page": index, "start": start, "end": current})
+                if index < len(pdf.pages):
+                    current += len(separator)
+        combined = separator.join(texts)
+        return combined, len(texts), page_spans
 
     def _extract_image_text(self, source: pathlib.Path) -> str:
         """Extract text from an image using OCR when available."""

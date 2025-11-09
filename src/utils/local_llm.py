@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from dataclasses import dataclass, field, asdict
@@ -46,6 +47,7 @@ class ModelConfig:
     seed: Optional[int] = None
     base_url: Optional[str] = None
     generation_kwargs: Dict[str, Any] = field(default_factory=dict)
+    api_key: Optional[str] = None
 
 
 @dataclass
@@ -185,13 +187,27 @@ class LocalLlamaEngine:
             options["seed"] = self.config.seed
         payload["options"] = options
 
+        headers: Dict[str, str] = {}
+        api_key = self.config.api_key or os.getenv("OLLAMA_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        elif endpoint not in {"http://localhost:11434", "http://127.0.0.1:11434"}:
+            LOGGER.warning(
+                "No Ollama API key configured while targeting %s; requests may fail with 401.",
+                endpoint,
+            )
+
         try:
-            response = requests.post(url, json=payload, timeout=120)
+            response = requests.post(url, json=payload, headers=headers, timeout=120)
             response.raise_for_status()
         except requests.exceptions.ConnectionError as exc:  # type: ignore[attr-defined]
-            raise RuntimeError(
-                f"Unable to reach Ollama at {endpoint}. "
+            suggestion = (
                 "Ensure `ollama serve` is running and accessible."
+                if "localhost" in endpoint or "127.0.0.1" in endpoint
+                else "Ensure the Ollama Cloud API is reachable and your network allows outbound traffic."
+            )
+            raise RuntimeError(
+                f"Unable to reach Ollama at {endpoint}. {suggestion}"
             ) from exc
         except requests.exceptions.Timeout as exc:  # type: ignore[attr-defined]
             raise RuntimeError(

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
+import json
+import os
 import pathlib
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .classifier import CLASSIFICATION_LABELS, ClassificationResult, DualLLMClassifier
 from .hitl_feedback import AdaptivePromptRefiner, Feedback, FeedbackRepository
@@ -83,6 +87,11 @@ def load_settings(path: pathlib.Path = CONFIG_PATH) -> Settings:
             max_tokens = _from_sources(spec, "max_tokens")
             seed_value = _from_sources(spec, "seed")
             base_url = _from_sources(spec, "base_url")
+            api_key_value = _from_sources(spec, "api_key")
+            if not api_key_value:
+                api_key_env = _from_sources(spec, "api_key_env")
+                if api_key_env:
+                    api_key_value = os.getenv(str(api_key_env))
             generation_kwargs = _merge_dicts(
                 model_defaults.get("generation_kwargs"),
                 ollama_defaults.get("generation_kwargs"),
@@ -104,6 +113,7 @@ def load_settings(path: pathlib.Path = CONFIG_PATH) -> Settings:
                 seed=int(seed_value) if seed_value is not None else None,
                 base_url=str(base_url) if base_url is not None else None,
                 generation_kwargs=generation_kwargs,
+                api_key=str(api_key_value) if api_key_value else None,
             )
             registry[name] = config
             registry[alias] = config
@@ -281,6 +291,7 @@ class ClassificationJob:
 
     task_id: str
     document_ids: List[str]
+    single_prompt: bool = False
 
 
 class ClassificationQueue:
@@ -351,6 +362,7 @@ class ClassificationQueue:
                     record.bundle,
                     self._prompt_tree,
                     record.path,
+                    job.single_prompt,
                 )
                 reports = await asyncio.to_thread(
                     DualLLMClassifier.generate_reports,
@@ -361,7 +373,13 @@ class ClassificationQueue:
                 await self._task_registry.fail(job.task_id, str(exc))
                 raise
 
-            payload = _serialize_classification(document_id, result, reports)
+            payload = _serialize_classification(
+                document_id,
+                record.bundle,
+                result,
+                reports,
+                job.single_prompt,
+            )
             await self._task_registry.add_result(job.task_id, payload)
             await self._task_registry.set_progress(job.task_id, index / total)
 
@@ -385,6 +403,7 @@ class ClassificationJobRequest(BaseModel):
     document_ids: Optional[List[str]] = None
     text: Optional[str] = None
     document_name: Optional[str] = None
+    single_prompt: bool = False
 
 
 class ClassificationJobResponse(BaseModel):
@@ -401,7 +420,7 @@ class CitationPayload(BaseModel):
     page: Optional[int]
     snippet: str
     confidence: float
-    metadata: Dict[str, str]
+    metadata: Dict[str, Any]
 
 
 class DocumentClassificationResult(BaseModel):
@@ -412,8 +431,16 @@ class DocumentClassificationResult(BaseModel):
     score: float
     safety_flags: List[str]
     verifier_agreement: bool
+    classification_id: Optional[int]
     citations: List[CitationPayload]
     reports: Dict[str, str]
+    category: str
+    page_count: int
+    image_count: int
+    evidence: List[Dict[str, Any]]
+    content_safety: str
+    single_prompt: bool = False
+    llm_debug: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskStatusResponse(BaseModel):
@@ -431,8 +458,10 @@ class FeedbackRequest(BaseModel):
 
     classification_id: int
     reviewer: str
+    decision: str = "accept"
     notes: str
     quality_score: float
+    suggested_label: Optional[str] = None
 
 
 class FeedbackResponse(BaseModel):
@@ -447,8 +476,10 @@ class FeedbackResponse(BaseModel):
 
 def _serialize_classification(
     document_id: str,
+    bundle: DocumentBundle,
     result: ClassificationResult,
     reports: Dict[str, pathlib.Path],
+    single_prompt: bool,
 ) -> Dict[str, object]:
     """Convert a classification result into an API-friendly dictionary."""
 
@@ -463,6 +494,13 @@ def _serialize_classification(
         for citation in result.citations
     ]
 
+    page_count = _infer_page_count(bundle)
+    image_count = _infer_image_count(bundle)
+    evidence = _format_evidence_entries(result, bundle)
+    category = _map_dashboard_category(result.label)
+    content_safety = _content_safety_status(result)
+    debug_info = result.debug_info or {}
+
     return {
         "document_id": document_id,
         "label": result.label,
@@ -472,7 +510,261 @@ def _serialize_classification(
         "classification_id": result.classification_id,
         "citations": citation_payloads,
         "reports": {key: str(path) for key, path in reports.items()},
+        "category": category,
+        "page_count": page_count,
+        "image_count": image_count,
+        "evidence": evidence,
+        "content_safety": content_safety,
+        "llm_debug": debug_info,
+        "single_prompt": single_prompt,
     }
+
+
+def _map_dashboard_category(label: str) -> str:
+    """Reduce internal labels to Public/Sensitive/Confidential buckets."""
+
+    normalised = (label or "").strip().lower()
+    if normalised == "public":
+        return "Public"
+    if "confidential" in normalised:
+        return "Confidential"
+    return "Sensitive"
+
+
+def _content_safety_status(result: ClassificationResult) -> str:
+    """Determine whether the content is safe for children."""
+
+    if result.label == "Unsafe" or result.safety_flags:
+        return "Not Safe for Kids"
+    return "Safe for Kids"
+
+
+def _infer_page_count(bundle: DocumentBundle) -> int:
+    """Best-effort page-count inference from metadata and image references."""
+
+    metadata = bundle.metadata or {}
+    page_value = metadata.get("page_count")
+    if isinstance(page_value, (int, float)) and page_value > 0:
+        return int(page_value)
+    try:
+        if isinstance(page_value, str):
+            parsed = int(page_value)
+            if parsed > 0:
+                return parsed
+    except ValueError:
+        pass
+
+    pages_from_images = max(
+        (img.page or 0 for img in bundle.images if img.page is not None),
+        default=0,
+    )
+    if pages_from_images:
+        return pages_from_images
+
+    text = (bundle.text or "").strip()
+    return 1 if text else 0
+
+
+def _infer_image_count(bundle: DocumentBundle) -> int:
+    """Return the total number of extracted images."""
+
+    metadata = bundle.metadata or {}
+    image_count = metadata.get("image_count")
+    if isinstance(image_count, (int, float)) and image_count >= 0:
+        return int(image_count)
+    try:
+        if isinstance(image_count, str):
+            parsed = int(image_count)
+            if parsed >= 0:
+                return parsed
+    except ValueError:
+        pass
+    return len(bundle.images)
+
+
+def _format_evidence_entries(
+    result: ClassificationResult, bundle: DocumentBundle
+) -> List[Dict[str, Any]]:
+    """Summarize textual and visual evidence for dashboard display."""
+
+    entries: List[Dict[str, Any]] = []
+    metadata = bundle.metadata or {}
+    spans = metadata.get("page_spans") or []
+
+    for citation in result.citations:
+        snippet = (citation.snippet or "").strip()
+        entry_meta = citation.metadata or {}
+        description = entry_meta.get("signal") or entry_meta.get("label")
+
+        if snippet:
+            cleaned = " ".join(snippet.split())
+            if len(cleaned) > 260:
+                cleaned = f"{cleaned[:257]}..."
+            entries.append(
+                {
+                    "type": "text",
+                    "page": citation.page,
+                    "content": cleaned,
+                    "description": description,
+                    "label": entry_meta.get("label"),
+                }
+            )
+        elif entry_meta:
+            metadata_preview = json.dumps(entry_meta, ensure_ascii=False, default=str)
+            entries.append(
+                {
+                    "type": "text",
+                    "page": citation.page,
+                    "content": metadata_preview,
+                    "description": description or "Metadata",
+                    "label": entry_meta.get("label"),
+                }
+            )
+
+    image_entries = _format_image_evidence(bundle)
+    entries.extend(image_entries)
+
+    if len(entries) < 3:
+        entries.extend(_fallback_evidence_snippets(bundle, 3 - len(entries)))
+
+    if not entries:
+        preview = (bundle.text or "").strip()
+        if preview:
+            excerpt = preview[:260]
+            entries.append({"type": "text", "page": None, "content": excerpt})
+
+    return entries[:10]
+
+
+def _format_image_evidence(bundle: DocumentBundle) -> List[Dict[str, Any]]:
+    """Create evidence payloads for extracted images."""
+
+    entries: List[Dict[str, Any]] = []
+    max_images = 2
+    for image in bundle.images:
+        if not _is_relevant_image(image.metadata):
+            continue
+        data_url = _encode_image_payload(image.image)
+        if not data_url:
+            continue
+        label = ""
+        if image.metadata:
+            label = (
+                image.metadata.get("label")
+                or image.metadata.get("name")
+                or image.metadata.get("id")
+                or ""
+            )
+        entries.append(
+            {
+                "type": "image",
+                "page": image.page,
+                "content": data_url,
+                "description": label or "Image snippet",
+                "bbox": _normalise_bbox(image.metadata or {}),
+            }
+        )
+        if len(entries) >= max_images:
+            break
+    return entries
+
+
+def _is_relevant_image(metadata: Optional[Dict[str, Any]]) -> bool:
+    if not metadata:
+        return False
+    relevance_keys = {
+        "label",
+        "risk",
+        "sensitive",
+        "pii",
+        "threat",
+        "score",
+        "confidence",
+        "bbox",
+        "x0",
+        "y0",
+        "entity",
+    }
+    lowered_keys = {str(key).lower() for key in metadata.keys()}
+    return any(key in lowered_keys for key in relevance_keys)
+
+
+def _fallback_evidence_snippets(
+    bundle: DocumentBundle, needed: int
+) -> List[Dict[str, Any]]:
+    """Generate fallback textual snippets to ensure multiple evidence entries."""
+
+    text = (bundle.text or "").strip()
+    if not text:
+        return []
+    metadata = bundle.metadata or {}
+    spans = metadata.get("page_spans") or []
+
+    snippets: List[Dict[str, Any]] = []
+    chunk_size = max(180, len(text) // (needed + 1))
+    for index in range(needed * 2):
+        start = min(len(text), index * chunk_size)
+        end = min(len(text), start + chunk_size)
+        snippet = text[start:end].strip()
+        if not snippet:
+            continue
+        page = _lookup_page_for_index(spans, start)
+        snippets.append({"type": "text", "page": page, "content": snippet})
+        if len(snippets) >= needed:
+            break
+    return snippets
+
+
+def _encode_image_payload(image_obj: object) -> Optional[str]:
+    """Return a base64 data URL for an extracted image."""
+
+    if image_obj is None:
+        return None
+
+    buffer = io.BytesIO()
+    try:
+        if hasattr(image_obj, "save"):
+            image_obj.save(buffer, format="PNG")
+        elif isinstance(image_obj, (bytes, bytearray)):
+            buffer.write(image_obj)
+        else:
+            return None
+    except Exception:  # pragma: no cover - defensive encoding
+        LOGGER.debug("Failed to encode image evidence", exc_info=True)
+        return None
+
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _normalise_bbox(metadata: Dict[str, Any]) -> List[float]:
+    """Return a normalised [x, y, width, height] bounding box."""
+
+    bbox = metadata.get("bbox")
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+        return [
+            max(0.0, min(1.0, float(bbox[0]))),
+            max(0.0, min(1.0, float(bbox[1]))),
+            max(0.05, min(1.0, float(bbox[2]))),
+            max(0.05, min(1.0, float(bbox[3]))),
+        ]
+
+    return [0.02, 0.02, 0.96, 0.96]
+
+
+def _lookup_page_for_index(spans: Sequence[Dict[str, Any]], index: int) -> Optional[int]:
+    """Best-effort mapping from text character index to page number."""
+
+    for span in spans:
+        start = span.get("start")
+        end = span.get("end")
+        if start is None or end is None:
+            continue
+        if start <= index < end:
+            page = span.get("page")
+            if isinstance(page, int):
+                return page
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -617,7 +909,11 @@ def create_app() -> FastAPI:
 
         task_id = await task_registry.create()
         await queue.enqueue(
-            ClassificationJob(task_id=task_id, document_ids=list(document_ids))
+            ClassificationJob(
+                task_id=task_id,
+                document_ids=list(document_ids),
+                single_prompt=bool(request.single_prompt),
+            )
         )
 
         return ClassificationJobResponse(task_id=task_id, status="queued")
@@ -658,8 +954,10 @@ def create_app() -> FastAPI:
                 classification_id=request.classification_id,
                 feedback=Feedback(
                     reviewer=request.reviewer,
-                    notes=request.notes,
+                    decision=request.decision or "accept",
+                    comments=request.notes,
                     quality_score=request.quality_score,
+                    suggested_label=request.suggested_label,
                 ),
             )
         except ValueError as exc:

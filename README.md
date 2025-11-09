@@ -41,6 +41,24 @@ pip install -r requirements.txt
    ```
 5. Restart `uvicorn` (or the Docker container) so the new configuration is loaded. The backend will now call the local Ollama HTTP API for both classifier passes.
 
+### Using Ollama Cloud
+1. Authenticate the Ollama CLI (one time):
+   ```bash
+   ollama signin
+   ```
+2. Register the cloud models you plan to call (examples):
+   ```bash
+   ollama pull gpt-oss:120b-cloud
+   ollama pull deepseek-v3.1:671b-cloud
+   ```
+3. Copy your Ollama Cloud API key from https://ollama.com.
+4. Export it before starting the backend (or place it in your shell profile):
+   ```bash
+   export OLLAMA_API_KEY="sk_live_xxx"
+   ```
+   The default `config/config.yaml` already points to `https://api.ollama.ai` and reads the key via `api_key_env: OLLAMA_API_KEY`, so no further edits are required. If you prefer to hardcode the key instead, replace the env entry with `api_key: "sk_live_xxx"` (only do this for local testing).
+5. Restart `uvicorn src.main:app --reload`. The classifier will now send requests to Ollama Cloud using your key while retaining the same dual-model workflow.
+
 ### Running the Backend
 ```bash
 uvicorn src.main:app --reload

@@ -133,15 +133,24 @@ def _append_dynamic_branches(root: PromptNode, metadata: Dict) -> None:
     LOGGER.debug("Detected content type: %s", content_type)
 
     text_prompt = (
-        "TC2 – PII Exposure Review:\n"
-        "Document title: {{ doc.title | default('Unknown document') }}.\n"
-        "Summarise detected personal identifiers (names, emails, government IDs) and\n"
-        "rate severity on a 1-5 scale."
+        "TC2 – Sensitive Data Deep Dive:\n"
+        "Document title: {{ doc.title | default('Unknown document') }} | "
+        "Filename: {{ doc.filename | default('unavailable') }}.\n"
+        "Enumerate every detected piece of regulated data: SSNs, national IDs, passports/visas, "
+        "driver's licenses, tax IDs, payment or bank account numbers, biometric/health records, "
+        "authentication secrets, and proprietary schematics/architecture notes.\n"
+        "Also list Confidential-but-not-regulated items such as customer/employee rosters, "
+        "roadmaps, pricing, incident reports, or legal agreements. "
+        "Reference page numbers or sections and rate exposure severity on a 1-5 scale with mitigation notes."
     )
     image_prompt = (
-        "TC4 – Image Classification:\n"
-        "Evaluate all provided imagery (count: {{ doc.image_count | default(0) }}).\n"
-        "Identify scene type, presence of people, and any compliance risks."
+        "TC4 – Image & Diagram Audit:\n"
+        "Extracted imagery count: {{ doc.image_count | default(0) }} | "
+        "Pages: {{ doc.pages_with_images | default('unknown') }}.\n"
+        "Describe each screenshot/photo/scan: note if it shows IDs, badges, customer data on screens, "
+        "engineering drawings, weapon or defense prototypes, medical records, or authentication material. "
+        "Flag any child-safety issues, hate symbols, violent acts, or cyber-threat content rendered in the image. "
+        "If an image is benign marketing artwork, explicitly say so."
     )
 
     if content_type in {"text", "mixed"}:
@@ -155,9 +164,18 @@ def _append_dynamic_branches(root: PromptNode, metadata: Dict) -> None:
 def _ensure_log_destination() -> None:
     """Make sure the prompt trace log exists."""
 
-    PROMPT_TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    global PROMPT_TRACE_PATH
+    try:
+        PROMPT_TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError):
+        fallback = Path("logs/prompt_trace.log")
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        PROMPT_TRACE_PATH = fallback
     if not PROMPT_TRACE_PATH.exists():
         PROMPT_TRACE_PATH.touch()
+
+
+_ensure_log_destination()
 
 
 def _log_prompt(node: PromptNode) -> None:

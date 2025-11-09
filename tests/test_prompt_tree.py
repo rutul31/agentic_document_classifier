@@ -1,11 +1,9 @@
 """Tests for prompt tree loading and dynamic prompt generation."""
 
-from pathlib import Path
-
-from src.prompt_tree import PromptTree, build_prompt_tree
+from src.prompt_tree import PROMPT_TRACE_PATH, PromptTree, build_prompt_tree
 
 
-PROMPT_LOG = Path("/logs/prompt_trace.log")
+PROMPT_LOG = PROMPT_TRACE_PATH
 
 
 def test_prompt_tree_from_yaml(tmp_path):

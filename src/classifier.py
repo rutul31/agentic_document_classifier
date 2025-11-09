@@ -22,12 +22,24 @@ from .citations import Citation, CitationManager
 from .hitl_feedback import FeedbackRepository
 from .preprocess import DocumentBundle
 from .prompt_tree import PromptNode, PromptTree
+from .utils.evidence import RiskSignal, extract_risk_signals
 from .utils.local_llm import CacheEntry, LocalLlamaEngine, ModelConfig, PromptCache
 from .utils.logger import get_logger
 
 LOGGER = get_logger(__name__)
 
 CLASSIFICATION_LABELS = ["Public", "Confidential", "Highly Sensitive", "Unsafe"]
+LABEL_PRIORITY = {label: index for index, label in enumerate(CLASSIFICATION_LABELS)}
+
+
+def _elevate_label(initial_label: str, risk_signals: Sequence[RiskSignal]) -> str:
+    """Return the most severe label suggested by heuristics or the original."""
+
+    target = initial_label
+    for signal in risk_signals:
+        if LABEL_PRIORITY.get(signal.label, 0) > LABEL_PRIORITY.get(target, 0):
+            target = signal.label
+    return target
 
 KEYWORD_RULES: List[Tuple[str, float, Tuple[str, ...]]] = [
     ("Unsafe", 0.99, ("breach", "malware", "ransomware", "exploit")),
@@ -50,6 +62,28 @@ KEYWORD_RULES: List[Tuple[str, float, Tuple[str, ...]]] = [
     ),
 ]
 
+SINGLE_PROMPT_TEMPLATE = (
+    "You are a document classification expert.\n\n"
+    "Your task: Review the given document and classify it based on sensitivity and safety risks.\n\n"
+    "Follow these steps in your reasoning:\n"
+    "1. Determine whether the document contains any sensitive or confidential personal, financial, or corporate data.\n"
+    "2. Identify if it includes any unsafe, malicious, or security-breach-related content "
+    "(e.g., malware, data leak instructions, hacking attempts, etc.).\n"
+    "3. Assign a risk level to the document:\n"
+    "   - Public: No sensitive or unsafe data.\n"
+    "   - Confidential: Contains private or limited-access data.\n"
+    "   - Highly Sensitive: Contains data whose exposure may cause harm or legal risk.\n"
+    "   - Unsafe: Contains malicious or security-critical content.\n"
+    "4. Output your result in the following structured JSON format:\n"
+    "{\n"
+    '  "contains_sensitive_data": true/false,\n'
+    '  "contains_unsafe_content": true/false,\n'
+    '  "risk_level": "Public" | "Confidential" | "Highly Sensitive" | "Unsafe",\n'
+    '  "reasoning_summary": "<one-sentence explanation>"\n'
+    "}\n\n"
+    "Be accurate, concise, and consistent in your evaluation."
+)
+
 
 @dataclass
 class ClassificationResult:
@@ -61,6 +95,7 @@ class ClassificationResult:
     safety_flags: List[str] = field(default_factory=list)
     verifier_agreement: bool = True
     classification_id: Optional[int] = None
+    debug_info: Dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> str:
         """Serialize the classification result to JSON."""
@@ -72,6 +107,7 @@ class ClassificationResult:
             "safety_flags": self.safety_flags,
             "verifier_agreement": self.verifier_agreement,
             "classification_id": self.classification_id,
+            "debug_info": self.debug_info,
         }
         return json.dumps(payload, ensure_ascii=False)
 
@@ -186,6 +222,12 @@ class LLMClient:
         self.cache = cache
         self._engine: Optional[LocalLlamaEngine] = None
         self._last_result: Optional[_LLMResult] = None
+        self._last_debug: Dict[str, Any] = {
+            "model": config.name,
+            "backend": None,
+            "fallback": True,
+            "reason": "not_run",
+        }
 
         if self.config.llm_provider.lower() == "local_llama":
             self._engine = LocalLlamaEngine(self.config)
@@ -198,6 +240,12 @@ class LLMClient:
     def classify(self, prompt: str, document: DocumentBundle) -> Tuple[str, float]:
         """Classify a document using local inference with caching."""
 
+        self._last_debug = {
+            "model": self.name,
+            "backend": (self.config.inference_engine or "unknown"),
+            "fallback": True,
+            "reason": "not_run",
+        }
         payload = self._build_cache_payload(prompt, document)
         cached_entry = self.cache.get(self.name, payload) if self.cache else None
         if cached_entry:
@@ -207,6 +255,9 @@ class LLMClient:
                 score=cached_entry.score,
                 reasoning=cached_entry.reasoning,
                 raw_response=cached_entry.raw_response,
+            )
+            self._last_debug.update(
+                {"backend": "cache", "fallback": False, "reason": None}
             )
             return cached_entry.label, cached_entry.score
 
@@ -227,6 +278,11 @@ class LLMClient:
                 label, score, reasoning = self._interpret_response(
                     raw_response, document.text
                 )
+                self._last_debug.update(
+                    backend=self.config.inference_engine or "ollama",
+                    fallback=False,
+                    reason=None,
+                )
             except Exception as exc:  # pragma: no cover - best effort fallback
                 LOGGER.warning(
                     "Local inference failed for %s: %s. Falling back to heuristics.",
@@ -234,8 +290,18 @@ class LLMClient:
                     exc,
                 )
                 label, score, reasoning = self._heuristic_classify(document.text)
+                self._last_debug.update(
+                    backend=self.config.inference_engine or "ollama",
+                    fallback=True,
+                    reason=str(exc),
+                )
         else:
             label, score, reasoning = self._heuristic_classify(document.text)
+            self._last_debug.update(
+                backend="heuristic",
+                fallback=True,
+                reason="engine_unavailable",
+            )
 
         self._last_result = _LLMResult(
             label=label, score=score, reasoning=reasoning, raw_response=raw_response
@@ -252,6 +318,12 @@ class LLMClient:
 
         return label, score
 
+    def debug_payload(self) -> Dict[str, Any]:
+        payload = dict(self._last_debug)
+        if self._last_result:
+            payload["last_confidence"] = self._last_result.score
+            payload["last_reasoning"] = self._last_result.reasoning[:240]
+        return payload
     # Internal helpers -----------------------------------------------------------
     def _build_cache_payload(self, prompt: str, document: DocumentBundle) -> str:
         content = {
@@ -273,15 +345,50 @@ class LLMClient:
         )
         labels = ", ".join(CLASSIFICATION_LABELS)
         instruction = (
-            "You are a document risk classifier. Review the document and respond "
-            "with JSON containing keys 'label', 'confidence', and 'reasoning'. "
-            f"Label must be one of: {labels}. Confidence must be between 0 and 1."
+            "SYSTEM ROLE: You are a senior security and compliance analyst reviewing "
+            "transcribed text, metadata, and extracted images from enterprise documents. "
+            "Evaluate sensitive-data exposure, confidentiality, and safety policy violations, "
+            "and always choose the most severe applicable label.\n"
+            "LABEL DEFINITIONS:\n"
+            "- Public: marketing collateral, published website copy, open-source references, or generic stock imagery intended for unrestricted sharing.\n"
+            "- Confidential: internal communications, customer or employee details (names, addresses, account info), project plans, non-public operations, contracts, or support transcripts.\n"
+            "- Highly Sensitive: regulated PII such as SSNs, national IDs, tax numbers, passports/visas, driver's licenses, payment or bank account numbers, authentication secrets, biometric/medical data, or proprietary schematics for defense/next-gen products and critical infrastructure.\n"
+            "- Unsafe: child exploitation material, hate or extremist propaganda, explicit violence or criminal instructions, malware/exploit tooling, cyber-threat playbooks, or coordinated political manipulation/disinformation.\n"
+            "ALWAYS inspect cues from both the document text and the image summary; screenshots or diagrams alone can trigger classification.\n"
+            "RESPONSE FORMAT: return strict JSON with keys 'label', 'confidence', and 'reasoning'. "
+            f"'label' must be one of: {labels}. 'confidence' is a float between 0 and 1. "
+            "In 'reasoning', cite the concrete indicators (PII types, asset names, policy keywords, page/image references) supporting the label. "
+            "If content is benign, explicitly state why it remains Public."
         )
         sections = [instruction, f"Task Prompt:\n{prompt.strip()}".strip()]
         if metadata:
             sections.append(f"Metadata:\n{metadata_json}")
+        sections.append(f"Image Summary:\n{self._summarize_images(document)}")
         sections.append(f"Document Text:\n{text or 'No textual content provided.'}")
         return "\n\n".join(sections)
+
+    def _summarize_images(self, document: DocumentBundle) -> str:
+        if not document.images:
+            return "No extracted images, diagrams, or screenshots were available."
+
+        summary: List[Dict[str, object]] = []
+        for index, doc_image in enumerate(document.images, start=1):
+            info: Dict[str, object] = {"index": index}
+            if doc_image.page is not None:
+                info["page"] = doc_image.page
+
+            metadata: Dict[str, object] = {}
+            for key, value in (doc_image.metadata or {}).items():
+                key_str = str(key)
+                if key_str.lower() == "stream":
+                    continue
+                metadata[key_str] = str(value)[:200]
+            if metadata:
+                info["metadata"] = metadata
+
+            summary.append(info)
+
+        return json.dumps(summary, ensure_ascii=False)
 
     def _interpret_response(self, response: str, text: str) -> Tuple[str, float, str]:
         response = response.strip()
@@ -296,7 +403,7 @@ class LLMClient:
         if json_payload:
             try:
                 data = json.loads(json_payload)
-                label = data.get("label") or data.get("category")
+                label = data.get("label") or data.get("category") or data.get("risk_level")
                 confidence = data.get("confidence") or data.get("score")
                 reasoning = data.get("reasoning") or data.get("rationale")
             except Exception:
@@ -409,16 +516,26 @@ class DualLLMClassifier:
         bundle: DocumentBundle,
         prompt_tree: PromptTree,
         document_path: pathlib.Path,
+        single_prompt_mode: bool = False,
     ) -> ClassificationResult:
         """Classify a document using dual-LLM verification."""
 
-        primary_label, primary_score = self._run_chain(self.primary, prompt_tree, bundle)
-        if self.secondary is not None:
-            secondary_label, secondary_score = self._run_chain(
-                self.secondary, prompt_tree, bundle
-            )
+        if single_prompt_mode:
+            primary_label, primary_score = self._run_single_prompt(self.primary, bundle)
+            if self.secondary is not None:
+                secondary_label, secondary_score = self._run_single_prompt(
+                    self.secondary, bundle
+                )
+            else:
+                secondary_label, secondary_score = primary_label, primary_score
         else:
-            secondary_label, secondary_score = primary_label, primary_score
+            primary_label, primary_score = self._run_chain(self.primary, prompt_tree, bundle)
+            if self.secondary is not None:
+                secondary_label, secondary_score = self._run_chain(
+                    self.secondary, prompt_tree, bundle
+                )
+            else:
+                secondary_label, secondary_score = primary_label, primary_score
         agreement = primary_label == secondary_label
 
         label = (
@@ -428,8 +545,15 @@ class DualLLMClassifier:
         )
         score = (primary_score + secondary_score) / 2.0
 
-        citations = self._build_citations(bundle, document_path, label)
-        safety_flags = self._run_safety_checks(bundle)
+        risk_signals = extract_risk_signals(bundle)
+        label = self._apply_risk_overrides(label, risk_signals)
+
+        citations = self._build_citations(bundle, document_path, label, risk_signals)
+        safety_flags = self._run_safety_checks(bundle, risk_signals)
+        debug_info = {
+            "primary": self.primary.debug_payload() if self.primary else None,
+            "secondary": self.secondary.debug_payload() if self.secondary else None,
+        }
 
         classification_id = self.feedback_repository.record_classification(
             document_path=str(document_path), classification=label, score=score
@@ -447,6 +571,7 @@ class DualLLMClassifier:
             safety_flags=safety_flags,
             verifier_agreement=agreement,
             classification_id=classification_id,
+            debug_info=debug_info,
         )
 
         _publish_test_helpers(result)
@@ -473,11 +598,21 @@ class DualLLMClassifier:
         LOGGER.debug("%s classified as %s (score %.2f)", client.name, label, score)
         return label, score
 
+    def _run_single_prompt(
+        self, client: Optional[LLMClient], bundle: DocumentBundle
+    ) -> Tuple[str, float]:
+        """Execute a single-instruction prompt instead of the prompt tree."""
+
+        if client is None:
+            return "Public", 0.0
+        label, score = client.classify(SINGLE_PROMPT_TEMPLATE, bundle)
+        LOGGER.debug("%s (single prompt) classified as %s (%.2f)", client.name, label, score)
+        return label, score
+
     def _resolve_disagreement(self, primary: str, secondary: str) -> str:
         """Resolve disagreements by selecting the more sensitive label."""
 
-        priority = {label: index for index, label in enumerate(CLASSIFICATION_LABELS)}
-        resolved = primary if priority[primary] > priority[secondary] else secondary
+        resolved = primary if LABEL_PRIORITY[primary] > LABEL_PRIORITY[secondary] else secondary
         LOGGER.info(
             "Resolved disagreement between %s and %s -> %s",
             primary,
@@ -487,11 +622,32 @@ class DualLLMClassifier:
         return resolved
 
     def _build_citations(
-        self, bundle: DocumentBundle, path: pathlib.Path, label: str
+        self,
+        bundle: DocumentBundle,
+        path: pathlib.Path,
+        label: str,
+        risk_signals: Sequence[RiskSignal],
     ) -> CitationManager:
         """Create citation evidence based on document text snippets."""
 
         manager = CitationManager()
+        if risk_signals:
+            for signal in risk_signals:
+                manager.add(
+                    Citation(
+                        source=str(path),
+                        page=signal.page,
+                        snippet=signal.snippet,
+                        confidence=signal.confidence,
+                        metadata={
+                            "label": signal.label,
+                            "signal": signal.description,
+                            "source_type": signal.source_type,
+                        },
+                    )
+                )
+            return manager
+
         snippet = bundle.text[:280] if bundle.text else ""
         manager.add(
             Citation(
@@ -499,18 +655,35 @@ class DualLLMClassifier:
                 page=1,
                 snippet=snippet,
                 confidence=0.6 if label == "Public" else 0.8,
-                metadata={"label": label},
+                metadata={"label": label, "signal": "fallback-snippet"},
             )
         )
         return manager
 
-    def _run_safety_checks(self, bundle: DocumentBundle) -> List[str]:
+    def _run_safety_checks(
+        self, bundle: DocumentBundle, risk_signals: Sequence[RiskSignal]
+    ) -> List[str]:
         """Perform basic keyword-based safety checks."""
 
-        text = bundle.text.lower()
-        flags = [keyword for keyword in self.safety_keywords if keyword in text]
+        text = (bundle.text or "").lower()
+        flags = {keyword for keyword in self.safety_keywords if keyword in text}
+        for signal in risk_signals:
+            if signal.label == "Unsafe":
+                flags.add(signal.description)
         LOGGER.debug("Safety flags detected: %s", flags)
-        return flags
+        return sorted(flags)
+
+    def _apply_risk_overrides(
+        self, initial_label: str, risk_signals: Sequence[RiskSignal]
+    ) -> str:
+        """Raise the label if heuristics detect higher-severity evidence."""
+
+        target = _elevate_label(initial_label, risk_signals)
+        if target != initial_label:
+            LOGGER.info(
+                "Risk signals escalated label from %s to %s", initial_label, target
+            )
+        return target
 
     # Report generation ----------------------------------------------------------
     @staticmethod
@@ -611,7 +784,15 @@ class ClassificationEngine:
                 True,
             )
 
-        citations = self._build_citations(bundle, document_path, category)
+        risk_signals = extract_risk_signals(bundle)
+        category = _elevate_label(category, risk_signals)
+
+        citations = self._build_citations(
+            bundle,
+            document_path,
+            category,
+            risk_signals,
+        )
         LOGGER.info("Final classification -> %s (%.2f)", category, confidence)
 
         return ClassificationEngineResult(
@@ -684,16 +865,33 @@ class ClassificationEngine:
         return resolved, confidence, False
 
     def _resolve_disagreement(self, primary: str, secondary: str) -> str:
-        priority = {label: index for index, label in enumerate(CLASSIFICATION_LABELS)}
-        return primary if priority[primary] > priority[secondary] else secondary
+        return primary if LABEL_PRIORITY[primary] > LABEL_PRIORITY[secondary] else secondary
 
     def _build_citations(
         self,
         bundle: DocumentBundle,
         path: Optional[pathlib.Path],
         label: str,
+        risk_signals: Sequence[RiskSignal],
     ) -> CitationManager:
         manager = CitationManager()
+        if risk_signals:
+            for signal in risk_signals:
+                manager.add(
+                    Citation(
+                        source=str(path) if path else "memory",
+                        page=signal.page,
+                        snippet=signal.snippet,
+                        confidence=signal.confidence,
+                        metadata={
+                            "label": signal.label,
+                            "signal": signal.description,
+                            "source_type": signal.source_type,
+                        },
+                    )
+                )
+            return manager
+
         snippet = (bundle.text or "")[:280]
         manager.add(
             Citation(
@@ -701,7 +899,7 @@ class ClassificationEngine:
                 page=1,
                 snippet=snippet,
                 confidence=0.6 if label == "Public" else 0.85,
-                metadata={"label": label},
+                metadata={"label": label, "signal": "fallback-snippet"},
             )
         )
         return manager
